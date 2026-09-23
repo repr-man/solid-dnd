@@ -1,10 +1,5 @@
-import {
-  createEffect,
-  createSignal,
-  onCleanup,
-  onMount,
-  Setter,
-} from "solid-js";
+import { createEffect, createSignal, onSettled } from "solid-js";
+import type { Setter } from "solid-js";
 
 import { Id, useDragDropContext } from "./drag-drop-context";
 import {
@@ -25,8 +20,9 @@ interface Droppable {
 const createDroppable = (id: Id, data: Record<string, any> = {}): Droppable => {
   const [state, { addDroppable, removeDroppable }] = useDragDropContext()!;
   const [node, setNode] = createSignal<HTMLElement | null>(null);
+  const [skipTransform, setSkipTransform] = createSignal(false);
 
-  onMount(() => {
+  onSettled(() => {
     const resolvedNode = node();
 
     if (resolvedNode) {
@@ -37,30 +33,41 @@ const createDroppable = (id: Id, data: Record<string, any> = {}): Droppable => {
         data,
       });
     }
+
+    return () => removeDroppable(id);
   });
-  onCleanup(() => removeDroppable(id));
 
   const isActiveDroppable = () => state.active.droppableId === id;
   const transform = () => {
     return state.droppables[id]?.transform || noopTransform();
   };
+
+  createEffect(
+    () => ({
+      node: node(),
+      transform: transform(),
+      skipTransform: skipTransform(),
+    }),
+    ({ node: resolvedNode, transform: resolvedTransform, skipTransform }) => {
+      if (!resolvedNode || skipTransform) return;
+
+      if (!transformsAreEqual(resolvedTransform, noopTransform())) {
+        const style = transformStyle(resolvedTransform);
+        resolvedNode.style.setProperty("transform", style.transform ?? null);
+      } else {
+        resolvedNode.style.removeProperty("transform");
+      }
+
+      return () => resolvedNode.style.removeProperty("transform");
+    }
+  );
+
   const droppable = Object.defineProperties(
     (element: HTMLElement, accessor?: () => { skipTransform?: boolean }) => {
       const config = accessor ? accessor() : {};
 
+      setSkipTransform(Boolean(config.skipTransform));
       setNode(element);
-
-      if (!config.skipTransform) {
-        createEffect(() => {
-          const resolvedTransform = transform();
-          if (!transformsAreEqual(resolvedTransform, noopTransform())) {
-            const style = transformStyle(transform());
-            element.style.setProperty("transform", style.transform ?? null);
-          } else {
-            element.style.removeProperty("transform");
-          }
-        });
-      }
     },
     {
       ref: {

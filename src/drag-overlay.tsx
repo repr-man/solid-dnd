@@ -1,5 +1,6 @@
-import { Portal } from "solid-js/web";
-import { Component, JSX, Show } from "solid-js";
+import { Portal, Show } from "@solidjs/web";
+import type { Component } from "solid-js";
+import type { JSX } from "@solidjs/web";
 
 import { Draggable, useDragDropContext } from "./drag-drop-context";
 import { transformStyle } from "./style";
@@ -70,4 +71,3 @@ const DragOverlay: Component<DragOverlayProps> = (props) => {
 };
 
 export { DragOverlay };
-

@@ -1,4 +1,4 @@
-import { onCleanup, onMount } from "solid-js";
+import { onSettled } from "solid-js";
 
 import {
   Coordinates,
@@ -24,12 +24,10 @@ const createPointerSensor = (id: Id = "pointer-sensor"): void => {
   const activationDelay = 250; // milliseconds
   const activationDistance = 10; // pixels
 
-  onMount(() => {
+  onSettled(() => {
     addSensor({ id, activators: { pointerdown: attach } });
-  });
 
-  onCleanup(() => {
-    removeSensor(id);
+    return () => removeSensor(id);
   });
 
   const isActiveSensor = () => state.active.sensorId === id;

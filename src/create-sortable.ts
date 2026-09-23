@@ -1,8 +1,8 @@
-import { createEffect, onCleanup, onMount } from "solid-js";
+import { createEffect, createSignal, onSettled } from "solid-js";
 
 import { createDraggable } from "./create-draggable";
 import { createDroppable } from "./create-droppable";
-import { RefSetter, combineRefs } from "./combine-refs";
+import type { RefSetter } from "./combine-refs";
 import { useSortableContext } from "./sortable-context";
 import {
   Id,
@@ -28,7 +28,12 @@ const createSortable = (id: Id, data: Record<string, any> = {}): Sortable => {
   const [sortableState] = useSortableContext()!;
   const draggable = createDraggable(id, data);
   const droppable = createDroppable(id, data);
-  const setNode = combineRefs(draggable.ref, droppable.ref);
+  const [node, setNode] = createSignal<HTMLElement | null>(null);
+  const setRefs = (element: HTMLElement | null) => {
+    draggable.ref(element);
+    droppable.ref(element);
+    setNode(element);
+  };
 
   const initialIndex = (): number => sortableState.initialIds.indexOf(id);
   const currentIndex = (): number => sortableState.sortedIds.indexOf(id);
@@ -64,8 +69,10 @@ const createSortable = (id: Id, data: Record<string, any> = {}): Sortable => {
     },
   };
 
-  onMount(() => addTransformer("droppables", id, transformer));
-  onCleanup(() => removeTransformer("droppables", id, transformer.id));
+  onSettled(() => {
+    addTransformer("droppables", id, transformer);
+    return () => removeTransformer("droppables", id, transformer.id);
+  });
 
   const transform = (): Transform => {
     return (
@@ -75,25 +82,32 @@ const createSortable = (id: Id, data: Record<string, any> = {}): Sortable => {
     );
   };
 
+  createEffect(
+    () => ({ node: node(), transform: transform() }),
+    ({ node: resolvedNode, transform: resolvedTransform }) => {
+      if (!resolvedNode) return;
+
+      if (!transformsAreEqual(resolvedTransform, noopTransform())) {
+        const style = transformStyle(resolvedTransform);
+        resolvedNode.style.setProperty("transform", style.transform ?? null);
+      } else {
+        resolvedNode.style.removeProperty("transform");
+      }
+
+      return () => resolvedNode.style.removeProperty("transform");
+    }
+  );
+
   const sortable = Object.defineProperties(
     (element: HTMLElement) => {
       draggable(element, () => ({ skipTransform: true }));
       droppable(element, () => ({ skipTransform: true }));
-
-      createEffect(() => {
-        const resolvedTransform = transform();
-        if (!transformsAreEqual(resolvedTransform, noopTransform())) {
-          const style = transformStyle(transform());
-          element.style.setProperty("transform", style.transform ?? null);
-        } else {
-          element.style.removeProperty("transform");
-        }
-      });
+      setNode(element);
     },
     {
       ref: {
         enumerable: true,
-        value: setNode,
+        value: setRefs,
       },
       transform: {
         enumerable: true,

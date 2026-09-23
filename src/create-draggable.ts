@@ -1,10 +1,5 @@
-import {
-  createEffect,
-  createSignal,
-  onCleanup,
-  onMount,
-  Setter,
-} from "solid-js";
+import { createEffect, createSignal, onSettled } from "solid-js";
+import type { Setter } from "solid-js";
 
 import { Id, Listeners, useDragDropContext } from "./drag-drop-context";
 import {
@@ -27,8 +22,9 @@ const createDraggable = (id: Id, data: Record<string, any> = {}): Draggable => {
   const [state, { addDraggable, removeDraggable, draggableActivators }] =
     useDragDropContext()!;
   const [node, setNode] = createSignal<HTMLElement | null>(null);
+  const [skipTransform, setSkipTransform] = createSignal(false);
 
-  onMount(() => {
+  onSettled(() => {
     const resolvedNode = node();
 
     if (resolvedNode) {
@@ -39,51 +35,60 @@ const createDraggable = (id: Id, data: Record<string, any> = {}): Draggable => {
         data,
       });
     }
+
+    return () => removeDraggable(id);
   });
-  onCleanup(() => removeDraggable(id));
 
   const isActiveDraggable = () => state.active.draggableId === id;
   const transform = () => {
     return state.draggables[id]?.transform || noopTransform();
   };
 
+  createEffect(
+    () => ({
+      node: node(),
+      activators: draggableActivators(id),
+    }),
+    ({ node: resolvedNode, activators }) => {
+      if (!resolvedNode) return;
+
+      for (const key in activators) {
+        resolvedNode.addEventListener(key, activators[key]);
+      }
+
+      return () => {
+        for (const key in activators) {
+          resolvedNode.removeEventListener(key, activators[key]);
+        }
+      };
+    }
+  );
+
+  createEffect(
+    () => ({
+      node: node(),
+      transform: transform(),
+      skipTransform: skipTransform(),
+    }),
+    ({ node: resolvedNode, transform: resolvedTransform, skipTransform }) => {
+      if (!resolvedNode || skipTransform) return;
+
+      if (!transformsAreEqual(resolvedTransform, noopTransform())) {
+        const style = transformStyle(resolvedTransform);
+        resolvedNode.style.setProperty("transform", style.transform ?? null);
+      } else {
+        resolvedNode.style.removeProperty("transform");
+      }
+
+      return () => resolvedNode.style.removeProperty("transform");
+    }
+  );
+
   const draggable = Object.defineProperties(
     (element: HTMLElement, accessor?: () => { skipTransform?: boolean }) => {
       const config = accessor ? accessor() : {};
-
-      createEffect(() => {
-        const resolvedNode = node();
-        const activators = draggableActivators(id);
-
-        if (resolvedNode) {
-          for (const key in activators) {
-            resolvedNode.addEventListener(key, activators[key]);
-          }
-        }
-
-        onCleanup(() => {
-          if (resolvedNode) {
-            for (const key in activators) {
-              resolvedNode.removeEventListener(key, activators[key]);
-            }
-          }
-        });
-      });
-
+      setSkipTransform(Boolean(config.skipTransform));
       setNode(element);
-
-      if (!config.skipTransform) {
-        createEffect(() => {
-          const resolvedTransform = transform();
-
-          if (!transformsAreEqual(resolvedTransform, noopTransform())) {
-            const style = transformStyle(transform());
-            element.style.setProperty("transform", style.transform ?? null);
-          } else {
-            element.style.removeProperty("transform");
-          }
-        });
-      }
     },
     {
       ref: {

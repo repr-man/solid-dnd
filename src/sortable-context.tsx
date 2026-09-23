@@ -1,11 +1,12 @@
 import {
   createContext,
   createEffect,
-  ParentComponent,
+  createStore,
+  onSettled,
   untrack,
   useContext,
 } from "solid-js";
-import { createStore, Store } from "solid-js/store";
+import type { ParentComponent, Store } from "solid-js";
 
 import { Id, useDragDropContext } from "./drag-drop-context";
 import { moveArrayItem } from "./move-array-item";
@@ -35,33 +36,51 @@ const SortableProvider: ParentComponent<SortableContextProps> = (props) => {
     return index >= 0 && index < state.initialIds.length;
   };
 
-  createEffect(() => {
-    setState("initialIds", [...props.ids]);
-    setState("sortedIds", [...props.ids]);
-  });
+  createEffect(
+    () => props.ids,
+    (ids) => {
+      setState((draft) => {
+        draft.initialIds = [...ids];
+        draft.sortedIds = [...ids];
+      });
+    }
+  );
 
-  createEffect(() => {
-    if (dndState.active.draggableId && dndState.active.droppableId) {
-      untrack(() => {
-        const fromIndex = state.sortedIds.indexOf(dndState.active.draggableId!);
-        const toIndex = state.initialIds.indexOf(dndState.active.droppableId!);
+  createEffect(
+    () => ({
+      draggableId: dndState.active.draggableId,
+      droppableId: dndState.active.droppableId,
+      ids: props.ids,
+      initialIds: untrack(() => [...state.initialIds]),
+      sortedIds: untrack(() => [...state.sortedIds]),
+    }),
+    ({ draggableId, droppableId, ids, initialIds, sortedIds }) => {
+      if (draggableId && droppableId) {
+        const fromIndex = sortedIds.indexOf(draggableId);
+        const toIndex = initialIds.indexOf(droppableId);
 
         if (!isValidIndex(fromIndex) || !isValidIndex(toIndex)) {
-          setState("sortedIds", [...props.ids]);
+          setState((draft) => {
+            draft.sortedIds = [...ids];
+          });
         } else if (fromIndex !== toIndex) {
-          const resorted = moveArrayItem(state.sortedIds, fromIndex, toIndex);
-          setState("sortedIds", resorted);
+          const resorted = moveArrayItem(sortedIds, fromIndex, toIndex);
+          setState((draft) => {
+            draft.sortedIds = resorted;
+          });
         }
-      });
-    } else {
-      setState("sortedIds", [...props.ids]);
+      } else {
+        setState((draft) => {
+          draft.sortedIds = [...ids];
+        });
+      }
     }
-  });
+  );
 
   const actions = {};
   const context: SortableContext = [state, actions];
 
-  return <Context.Provider value={context}>{props.children}</Context.Provider>;
+  return <Context value={context}>{props.children}</Context>;
 };
 
 const useSortableContext = (): SortableContext | null => {

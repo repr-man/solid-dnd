@@ -1,13 +1,7 @@
-import {
-  Component,
-  For,
-  JSX,
-  mergeProps,
-  onCleanup,
-  onMount,
-  Show,
-} from "solid-js";
-import { Portal } from "solid-js/web";
+import { For, merge, onSettled, Show } from "solid-js";
+import type { Component } from "solid-js";
+import { Portal } from "@solidjs/web";
+import type { JSX } from "@solidjs/web";
 
 import { Id, useDragDropContext } from "./drag-drop-context";
 import { Layout, Transform } from "./layout";
@@ -22,7 +16,7 @@ interface HighlighterProps {
 }
 
 const Highlighter: Component<HighlighterProps> = (props) => {
-  props = mergeProps({ color: "red", active: false }, props);
+  props = merge({ color: "red", active: false }, props);
   return (
     <div
       style={{
@@ -60,12 +54,10 @@ const DragDropDebugger = () => {
     }
   };
 
-  onMount(() => {
+  onSettled(() => {
     document.addEventListener("scroll", update);
-  });
 
-  onCleanup(() => {
-    document.removeEventListener("scroll", update);
+    return () => document.removeEventListener("scroll", update);
   });
 
   return (
