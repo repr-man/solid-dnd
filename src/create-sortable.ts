@@ -1,7 +1,7 @@
-import { createEffect, createSignal, onSettled } from "solid-js";
+import { createEffect, createSignal } from "solid-js";
 
 import { createDraggable } from "./create-draggable";
-import { createDroppable } from "./create-droppable";
+import { createDroppableWithTransformers } from "./create-droppable";
 import type { RefSetter } from "./combine-refs";
 import { useSortableContext } from "./sortable-context";
 import {
@@ -23,17 +23,10 @@ interface Sortable {
 }
 
 const createSortable = (id: Id, data: Record<string, any> = {}): Sortable => {
-  const [dndState, { addTransformer, removeTransformer }] =
-    useDragDropContext()!;
+  const [dndState] = useDragDropContext()!;
   const [sortableState] = useSortableContext()!;
   const draggable = createDraggable(id, data);
-  const droppable = createDroppable(id, data);
   const [node, setNode] = createSignal<HTMLElement | null>(null);
-  const setRefs = (element: HTMLElement | null) => {
-    draggable.ref(element);
-    droppable.ref(element);
-    setNode(element);
-  };
 
   const initialIndex = (): number => sortableState.initialIds.indexOf(id);
   const currentIndex = (): number => sortableState.sortedIds.indexOf(id);
@@ -69,10 +62,12 @@ const createSortable = (id: Id, data: Record<string, any> = {}): Sortable => {
     },
   };
 
-  onSettled(() => {
-    addTransformer("droppables", id, transformer);
-    return () => removeTransformer("droppables", id, transformer.id);
-  });
+  const droppable = createDroppableWithTransformers(id, data, [transformer]);
+  const setRefs = (element: HTMLElement | null) => {
+    draggable.ref(element);
+    droppable.ref(element);
+    setNode(element);
+  };
 
   const transform = (): Transform => {
     return (

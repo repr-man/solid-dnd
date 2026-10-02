@@ -63,6 +63,13 @@ interface Draggable extends Item {}
 
 interface Droppable extends Item {}
 
+// Initial transformers are an internal registration detail. The public
+// addDroppable action continues to accept the ordinary droppable input.
+type DroppableRegistration = Omit<
+  Droppable,
+  "transform" | "transformed" | "transformers"
+> & { transformers?: Record<Id, Transformer> };
+
 interface Overlay extends Item {}
 
 type DragEvent = {
@@ -366,7 +373,8 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
     node,
     layout,
     data,
-  }) => {
+    transformers,
+  }: DroppableRegistration) => {
     const existingDroppable = state.droppables[id];
 
     const droppable = {
@@ -377,43 +385,41 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
       _pendingCleanup: false,
     };
 
-    if (!existingDroppable) {
-      Object.defineProperties(droppable, {
-        transformers: {
-          enumerable: true,
-          configurable: true,
-          writable: true,
-          value: {},
-        },
-        transform: {
-          enumerable: true,
-          configurable: true,
-          get: () => {
-            const transformers = Object.values(
-              state.droppables[id].transformers
-            );
-            transformers.sort((a, b) => a.order - b.order);
+    // Every replacement needs a complete entry. Initial transformers share
+    // its registration lifetime; ordinary action updates retain custom ones.
+    Object.defineProperties(droppable, {
+      transformers: {
+        enumerable: true,
+        configurable: true,
+        writable: true,
+        value: { ...(transformers ?? existingDroppable?.transformers) },
+      },
+      transform: {
+        enumerable: true,
+        configurable: true,
+        get: () => {
+          const transformers = Object.values(state.droppables[id].transformers);
+          transformers.sort((a, b) => a.order - b.order);
 
-            return transformers.reduce(
-              (transform: Transform, transformer: Transformer) => {
-                return transformer.callback(transform);
-              },
-              noopTransform()
-            );
-          },
+          return transformers.reduce(
+            (transform: Transform, transformer: Transformer) => {
+              return transformer.callback(transform);
+            },
+            noopTransform()
+          );
         },
-        transformed: {
-          enumerable: true,
-          configurable: true,
-          get: () => {
-            return transformLayout(
-              state.droppables[id].layout,
-              state.droppables[id].transform
-            );
-          },
+      },
+      transformed: {
+        enumerable: true,
+        configurable: true,
+        get: () => {
+          return transformLayout(
+            state.droppables[id].layout,
+            state.droppables[id].transform
+          );
         },
-      });
-    }
+      },
+    });
 
     setState((draft) => {
       draft.droppables[id] = droppable as Droppable;

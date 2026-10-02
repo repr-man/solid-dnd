@@ -1,7 +1,7 @@
 import { createEffect, createSignal, onSettled } from "solid-js";
 import type { Setter } from "solid-js";
 
-import { Id, useDragDropContext } from "./drag-drop-context";
+import { Id, Transformer, useDragDropContext } from "./drag-drop-context";
 import {
   elementLayout,
   noopTransform,
@@ -18,6 +18,14 @@ interface Droppable {
 }
 
 const createDroppable = (id: Id, data: Record<string, any> = {}): Droppable => {
+  return createDroppableWithTransformers(id, data, []);
+};
+
+const createDroppableWithTransformers = (
+  id: Id,
+  data: Record<string, any>,
+  transformers: readonly Transformer[]
+): Droppable => {
   const [state, { addDroppable, removeDroppable }] = useDragDropContext()!;
   const [node, setNode] = createSignal<HTMLElement | null>(null);
   const [skipTransform, setSkipTransform] = createSignal(false);
@@ -26,15 +34,19 @@ const createDroppable = (id: Id, data: Record<string, any> = {}): Droppable => {
     const resolvedNode = node();
 
     if (resolvedNode) {
-      addDroppable({
+      const registration = {
         id,
         node: resolvedNode,
         layout: elementLayout(resolvedNode),
         data,
-      });
-    }
+        transformers: Object.fromEntries<Transformer>(
+          transformers.map((transformer) => [transformer.id, transformer])
+        ),
+      };
+      addDroppable(registration);
 
-    return () => removeDroppable(id);
+      return () => removeDroppable(id);
+    }
   });
 
   const isActiveDroppable = () => state.active.droppableId === id;
@@ -88,4 +100,5 @@ const createDroppable = (id: Id, data: Record<string, any> = {}): Droppable => {
   return droppable;
 };
 
-export { createDroppable };
+// Internal registration helper; only createDroppable is exported by the package.
+export { createDroppable, createDroppableWithTransformers };
