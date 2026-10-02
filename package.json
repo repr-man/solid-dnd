@@ -34,6 +34,26 @@
       },
       "default": "./dist/index.jsx"
     },
+    "worker": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/server.js"
+    },
+    "browser": {
+      "development": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/dev.js"
+      },
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "deno": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/server.js"
+    },
+    "node": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/server.js"
+    },
     "development": {
       "import": {
         "types": "./dist/index.d.ts",

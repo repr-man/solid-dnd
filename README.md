@@ -81,6 +81,23 @@ export default App;
 
 See more examples at https://solid-dnd.com
 
+## Server rendering
+
+Solid-aware bundlers can select the `solid` export and compile its preserved JSX
+for either the browser or SSR. The bundler must process that JSX rather than
+externalize it as an ordinary JavaScript dependency.
+
+For consumers without JSX compilation, the `node`, `worker`, and `deno` export
+conditions select SSR-compiled JavaScript. The `worker` condition takes precedence
+over `browser`, matching Solid's runtime exports. Browser imports retain their
+DOM-compiled output and all entries share the same types.
+
+Drag interactions and layout measurement require browser elements and become
+available after hydration. Solid's server runtime omits portals and lifecycle
+effects, so overlays and the debugger do not render on the server. Consumers that
+bypass conditional exports and load `main`/`module` or a DOM distribution file
+directly must keep that import on the client.
+
 ## What's implemented? ✔️
 
 - [x] Use `createDraggable` with your elements to easily integrate drag
