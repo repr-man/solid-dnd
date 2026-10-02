@@ -203,23 +203,36 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
     transformerId
   ) => {
     const displayType = type.substring(0, type.length - 1);
+    const item = untrack(() => state[type][id]);
 
-    if (!untrack(() => state[type][id])) {
+    if (!item) {
       console.warn(
         `Cannot remove transformer from nonexistent ${displayType} with id: ${id}`
       );
       return;
     }
 
-    if (!untrack(() => state[type][id]["transformers"][transformerId])) {
+    const transformer = untrack(() => item.transformers[transformerId]);
+    if (!transformer) {
       console.warn(
         `Cannot remove from ${displayType} with id ${id}, nonexistent transformer with id: ${transformerId}`
       );
       return;
     }
 
-    setState((draft) => {
-      delete draft[type][id].transformers[transformerId];
+    // Disposal can run in an owned scope. Defer registry writes and only
+    // remove the captured registration, never a replacement using the same ID.
+    queueMicrotask(() => {
+      if (
+        state[type][id] !== item ||
+        item.transformers[transformerId] !== transformer
+      ) {
+        return;
+      }
+
+      setState((draft) => {
+        delete draft[type][id].transformers[transformerId];
+      });
     });
   };
 
@@ -319,19 +332,25 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
   };
 
   const removeDraggable: DragDropActions["removeDraggable"] = (id) => {
-    if (!untrack(() => state.draggables[id])) {
+    const draggable = untrack(() => state.draggables[id]);
+    if (!draggable) {
       console.warn(`Cannot remove nonexistent draggable with id: ${id}`);
       return;
     }
 
-    setState((draft) => {
-      draft.draggables[id]._pendingCleanup = true;
+    // Even marking cleanup pending is a reactive write; defer it past disposal.
+    queueMicrotask(() => {
+      if (state.draggables[id] !== draggable) return;
+
+      setState((draft) => {
+        draft.draggables[id]._pendingCleanup = true;
+      });
+      queueMicrotask(() => cleanupDraggable(id, draggable));
     });
-    queueMicrotask(() => cleanupDraggable(id));
   };
 
-  const cleanupDraggable = (id: Id) => {
-    if (state.draggables[id]?._pendingCleanup) {
+  const cleanupDraggable = (id: Id, draggable: Draggable) => {
+    if (state.draggables[id] === draggable && draggable._pendingCleanup) {
       const cleanupActive = state.active.draggableId === id;
       setState((draft) => {
         if (cleanupActive) {
@@ -406,19 +425,25 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
   };
 
   const removeDroppable: DragDropActions["removeDroppable"] = (id) => {
-    if (!untrack(() => state.droppables[id])) {
+    const droppable = untrack(() => state.droppables[id]);
+    if (!droppable) {
       console.warn(`Cannot remove nonexistent droppable with id: ${id}`);
       return;
     }
 
-    setState((draft) => {
-      draft.droppables[id]._pendingCleanup = true;
+    // Even marking cleanup pending is a reactive write; defer it past disposal.
+    queueMicrotask(() => {
+      if (state.droppables[id] !== droppable) return;
+
+      setState((draft) => {
+        draft.droppables[id]._pendingCleanup = true;
+      });
+      queueMicrotask(() => cleanupDroppable(id, droppable));
     });
-    queueMicrotask(() => cleanupDroppable(id));
   };
 
-  const cleanupDroppable = (id: Id) => {
-    if (state.droppables[id]?._pendingCleanup) {
+  const cleanupDroppable = (id: Id, droppable: Droppable) => {
+    if (state.droppables[id] === droppable && droppable._pendingCleanup) {
       const cleanupActive = state.active.droppableId === id;
       setState((draft) => {
         if (cleanupActive) {
@@ -453,17 +478,22 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
   };
 
   const removeSensor: DragDropActions["removeSensor"] = (id) => {
-    if (!untrack(() => state.sensors[id])) {
+    const sensor = untrack(() => state.sensors[id]);
+    if (!sensor) {
       console.warn(`Cannot remove nonexistent sensor with id: ${id}`);
       return;
     }
 
-    const cleanupActive = state.active.sensorId === id;
-    setState((draft) => {
-      if (cleanupActive) {
-        draft.active.sensorId = null;
-      }
-      delete draft.sensors[id];
+    queueMicrotask(() => {
+      if (state.sensors[id] !== sensor) return;
+
+      const cleanupActive = state.active.sensorId === id;
+      setState((draft) => {
+        if (cleanupActive) {
+          draft.active.sensorId = null;
+        }
+        delete draft.sensors[id];
+      });
     });
   };
 
