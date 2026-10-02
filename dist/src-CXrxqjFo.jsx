@@ -1,4 +1,4 @@
-import { For, Show, createContext, createEffect, createSignal, createStore, merge, onSettled, untrack, useContext } from "solid-js";
+import { For, Show, createContext, createEffect, createMemo, createRoot, createSignal, createStore, getOwner, isDisposed, merge, onSettled, runWithOwner, untrack, useContext } from "solid-js";
 import { Portal, Show as Show$1 } from "@solidjs/web";
 //#region src/layout.ts
 var Layout = class {
@@ -193,6 +193,40 @@ const DragDropProvider = (passedProps) => {
 			overlay: null
 		}
 	});
+	const providerOwner = getOwner();
+	const geometryDisposers = /* @__PURE__ */ new WeakMap();
+	const createGeometry = (type, id, initialLayout) => runWithOwner(providerOwner, () => createRoot((dispose) => {
+		const transform = createMemo(() => {
+			const item = state[type][id];
+			if (!item || type === "draggables" && state.active.overlay) return noopTransform();
+			const transformers = Object.values(item.transformers);
+			transformers.sort((a, b) => a.order - b.order);
+			const result = transformers.reduce((transform, transformer) => transformer.callback(transform), noopTransform());
+			return {
+				x: result.x,
+				y: result.y
+			};
+		}, {
+			equals: transformsAreEqual,
+			name: `${type}.${id}.transform`
+		});
+		return {
+			transform,
+			transformed: createMemo(() => transformLayout(state[type][id]?.layout ?? initialLayout, transform()), {
+				equals: layoutsAreEqual,
+				name: `${type}.${id}.transformed`
+			}),
+			dispose
+		};
+	}));
+	const registrationTokens = /* @__PURE__ */ new WeakMap();
+	const isCurrentRegistration = (current, entry, token) => current === entry && registrationTokens.get(entry) === token;
+	const updateTransformer = (transformers, transformer) => {
+		const existing = transformers[transformer.id];
+		if (existing) Object.assign(existing, transformer);
+		else transformers[transformer.id] = transformer;
+		registrationTokens.set(transformers[transformer.id], {});
+	};
 	const addTransformer = (type, id, transformer) => {
 		const displayType = type.substring(0, type.length - 1);
 		if (!untrack(() => state[type][id])) {
@@ -200,25 +234,34 @@ const DragDropProvider = (passedProps) => {
 			return;
 		}
 		setState((draft) => {
-			draft[type][id].transformers[transformer.id] = transformer;
+			updateTransformer(draft[type][id].transformers, transformer);
 		});
 	};
 	const removeTransformer = (type, id, transformerId) => {
 		const displayType = type.substring(0, type.length - 1);
-		if (!untrack(() => state[type][id])) {
+		const item = untrack(() => state[type][id]);
+		if (!item) {
 			console.warn(`Cannot remove transformer from nonexistent ${displayType} with id: ${id}`);
 			return;
 		}
-		if (!untrack(() => state[type][id]["transformers"][transformerId])) {
+		const transformer = untrack(() => item.transformers[transformerId]);
+		if (!transformer) {
 			console.warn(`Cannot remove from ${displayType} with id ${id}, nonexistent transformer with id: ${transformerId}`);
 			return;
 		}
-		setState((draft) => {
-			delete draft[type][id].transformers[transformerId];
+		const itemToken = registrationTokens.get(item);
+		const transformerToken = registrationTokens.get(transformer);
+		queueMicrotask(() => {
+			if (!isCurrentRegistration(state[type][id], item, itemToken) || !isCurrentRegistration(item.transformers[transformerId], transformer, transformerToken)) return;
+			setState((draft) => {
+				delete draft[type][id].transformers[transformerId];
+			});
 		});
 	};
 	const addDraggable = ({ id, node, layout, data }) => {
+		if (isDisposed(providerOwner)) return;
 		const existingDraggable = state.draggables[id];
+		const geometry = createGeometry("draggables", id, layout);
 		const draggable = {
 			id,
 			node,
@@ -227,7 +270,7 @@ const DragDropProvider = (passedProps) => {
 			_pendingCleanup: false
 		};
 		let transformer;
-		if (!existingDraggable) Object.defineProperties(draggable, {
+		Object.defineProperties(draggable, {
 			transformers: {
 				enumerable: true,
 				configurable: true,
@@ -237,24 +280,15 @@ const DragDropProvider = (passedProps) => {
 			transform: {
 				enumerable: true,
 				configurable: true,
-				get: () => {
-					if (state.active.overlay) return noopTransform();
-					const transformers = Object.values(state.draggables[id].transformers);
-					transformers.sort((a, b) => a.order - b.order);
-					return transformers.reduce((transform, transformer) => {
-						return transformer.callback(transform);
-					}, noopTransform());
-				}
+				get: geometry.transform
 			},
 			transformed: {
 				enumerable: true,
 				configurable: true,
-				get: () => {
-					return transformLayout(state.draggables[id].layout, state.draggables[id].transform);
-				}
+				get: geometry.transformed
 			}
 		});
-		else if (state.active.draggableId === id && !state.active.overlay) {
+		if (existingDraggable && state.active.draggableId === id && !state.active.overlay) {
 			const layoutDelta = {
 				x: existingDraggable.layout.x - layout.x,
 				y: existingDraggable.layout.y - layout.y
@@ -275,32 +309,54 @@ const DragDropProvider = (passedProps) => {
 			onDragEnd(() => removeTransformer("draggables", id, transformerId));
 		}
 		setState((draft) => {
-			draft.draggables[id] = draggable;
-			if (transformer) draft.draggables[id].transformers[transformer.id] = transformer;
+			const existing = draft.draggables[id];
+			if (existing) {
+				geometry.dispose();
+				Object.assign(existing, {
+					id,
+					node,
+					layout,
+					data,
+					_pendingCleanup: false
+				});
+			} else {
+				draft.draggables[id] = draggable;
+				geometryDisposers.set(draft.draggables[id], geometry.dispose);
+			}
+			registrationTokens.set(draft.draggables[id], {});
+			if (transformer) updateTransformer(draft.draggables[id].transformers, transformer);
 		});
 		if (state.active.draggable) recomputeLayouts();
 	};
 	const removeDraggable = (id) => {
-		if (!untrack(() => state.draggables[id])) {
+		const draggable = untrack(() => state.draggables[id]);
+		if (!draggable) {
 			console.warn(`Cannot remove nonexistent draggable with id: ${id}`);
 			return;
 		}
-		setState((draft) => {
-			draft.draggables[id]._pendingCleanup = true;
+		const token = registrationTokens.get(draggable);
+		queueMicrotask(() => {
+			if (!isCurrentRegistration(state.draggables[id], draggable, token)) return;
+			setState((draft) => {
+				draft.draggables[id]._pendingCleanup = true;
+			});
+			queueMicrotask(() => cleanupDraggable(id, draggable, token));
 		});
-		queueMicrotask(() => cleanupDraggable(id));
 	};
-	const cleanupDraggable = (id) => {
-		if (state.draggables[id]?._pendingCleanup) {
+	const cleanupDraggable = (id, draggable, token) => {
+		if (isCurrentRegistration(state.draggables[id], draggable, token) && draggable._pendingCleanup) {
 			const cleanupActive = state.active.draggableId === id;
+			geometryDisposers.get(draggable)?.();
+			geometryDisposers.delete(draggable);
 			setState((draft) => {
 				if (cleanupActive) draft.active.draggableId = null;
 				delete draft.draggables[id];
 			});
 		}
 	};
-	const addDroppable = ({ id, node, layout, data }) => {
-		const existingDroppable = state.droppables[id];
+	const addDroppable = ({ id, node, layout, data, transformers }) => {
+		if (isDisposed(providerOwner)) return;
+		const geometry = createGeometry("droppables", id, layout);
 		const droppable = {
 			id,
 			node,
@@ -308,50 +364,64 @@ const DragDropProvider = (passedProps) => {
 			data,
 			_pendingCleanup: false
 		};
-		if (!existingDroppable) Object.defineProperties(droppable, {
+		Object.defineProperties(droppable, {
 			transformers: {
 				enumerable: true,
 				configurable: true,
 				writable: true,
-				value: {}
+				value: { ...transformers }
 			},
 			transform: {
 				enumerable: true,
 				configurable: true,
-				get: () => {
-					const transformers = Object.values(state.droppables[id].transformers);
-					transformers.sort((a, b) => a.order - b.order);
-					return transformers.reduce((transform, transformer) => {
-						return transformer.callback(transform);
-					}, noopTransform());
-				}
+				get: geometry.transform
 			},
 			transformed: {
 				enumerable: true,
 				configurable: true,
-				get: () => {
-					return transformLayout(state.droppables[id].layout, state.droppables[id].transform);
-				}
+				get: geometry.transformed
 			}
 		});
 		setState((draft) => {
-			draft.droppables[id] = droppable;
+			const existing = draft.droppables[id];
+			if (existing) {
+				geometry.dispose();
+				Object.assign(existing, {
+					id,
+					node,
+					layout,
+					data,
+					_pendingCleanup: false
+				});
+				if (transformers) existing.transformers = { ...transformers };
+			} else {
+				draft.droppables[id] = droppable;
+				geometryDisposers.set(draft.droppables[id], geometry.dispose);
+			}
+			registrationTokens.set(draft.droppables[id], {});
 		});
 		if (state.active.draggable) recomputeLayouts();
 	};
 	const removeDroppable = (id) => {
-		if (!untrack(() => state.droppables[id])) {
+		const droppable = untrack(() => state.droppables[id]);
+		if (!droppable) {
 			console.warn(`Cannot remove nonexistent droppable with id: ${id}`);
 			return;
 		}
-		setState((draft) => {
-			draft.droppables[id]._pendingCleanup = true;
+		const token = registrationTokens.get(droppable);
+		queueMicrotask(() => {
+			if (!isCurrentRegistration(state.droppables[id], droppable, token)) return;
+			setState((draft) => {
+				draft.droppables[id]._pendingCleanup = true;
+			});
+			queueMicrotask(() => cleanupDroppable(id, droppable, token));
 		});
-		queueMicrotask(() => cleanupDroppable(id));
 	};
-	const cleanupDroppable = (id) => {
-		if (state.droppables[id]?._pendingCleanup) {
+	const cleanupDroppable = (id, droppable, token) => {
+		if (isCurrentRegistration(state.droppables[id], droppable, token) && droppable._pendingCleanup) {
 			const cleanupActive = state.active.droppableId === id;
+			geometryDisposers.get(droppable)?.();
+			geometryDisposers.delete(droppable);
 			setState((draft) => {
 				if (cleanupActive) draft.active.droppableId = null;
 				delete draft.droppables[id];
@@ -360,7 +430,7 @@ const DragDropProvider = (passedProps) => {
 	};
 	const addSensor = ({ id, activators }) => {
 		setState((draft) => {
-			draft.sensors[id] = {
+			const sensor = {
 				id,
 				activators,
 				coordinates: {
@@ -380,26 +450,34 @@ const DragDropProvider = (passedProps) => {
 					}
 				}
 			};
+			const existing = draft.sensors[id];
+			if (existing) Object.assign(existing, sensor);
+			else draft.sensors[id] = sensor;
+			registrationTokens.set(draft.sensors[id], {});
 		});
 	};
 	const removeSensor = (id) => {
-		if (!untrack(() => state.sensors[id])) {
+		const sensor = untrack(() => state.sensors[id]);
+		if (!sensor) {
 			console.warn(`Cannot remove nonexistent sensor with id: ${id}`);
 			return;
 		}
-		const cleanupActive = state.active.sensorId === id;
-		setState((draft) => {
-			if (cleanupActive) draft.active.sensorId = null;
-			delete draft.sensors[id];
+		const token = registrationTokens.get(sensor);
+		queueMicrotask(() => {
+			if (!isCurrentRegistration(state.sensors[id], sensor, token)) return;
+			const cleanupActive = state.active.sensorId === id;
+			setState((draft) => {
+				if (cleanupActive) draft.active.sensorId = null;
+				delete draft.sensors[id];
+			});
 		});
 	};
 	const setOverlay = ({ node, layout }) => {
-		const existing = state.active.overlay;
 		const overlay = {
 			node,
 			layout
 		};
-		if (!existing) Object.defineProperties(overlay, {
+		Object.defineProperties(overlay, {
 			id: {
 				enumerable: true,
 				configurable: true,
@@ -440,19 +518,24 @@ const DragDropProvider = (passedProps) => {
 			}
 		});
 		setState((draft) => {
-			draft.active.overlay = overlay;
+			if (draft.active.overlay) Object.assign(draft.active.overlay, {
+				node,
+				layout
+			});
+			else draft.active.overlay = overlay;
 		});
 	};
 	const clearOverlay = () => setState((draft) => {
 		draft.active.overlay = null;
 	});
 	const sensorStart = (id, coordinates) => {
+		const { x, y } = coordinates;
 		setState((draft) => {
-			draft.sensors[id].coordinates = {
-				...draft.sensors[id].coordinates,
-				origin: { ...coordinates },
-				current: { ...coordinates }
-			};
+			const { origin, current } = draft.sensors[id].coordinates;
+			origin.x = x;
+			origin.y = y;
+			current.x = x;
+			current.y = y;
 			draft.active.sensorId = id;
 		});
 	};
@@ -462,8 +545,11 @@ const DragDropProvider = (passedProps) => {
 			console.warn("Cannot move sensor when no sensor active.");
 			return;
 		}
+		const { x, y } = coordinates;
 		setState((draft) => {
-			draft.sensors[sensorId].coordinates.current = { ...coordinates };
+			const current = draft.sensors[sensorId].coordinates.current;
+			current.x = x;
+			current.y = y;
 		});
 	};
 	const sensorEnd = () => setState((draft) => {
@@ -552,7 +638,7 @@ const DragDropProvider = (passedProps) => {
 		recomputeLayouts();
 		setState((draft) => {
 			draft.active.draggableId = draggableId;
-			draft.draggables[draggableId].transformers[transformer.id] = transformer;
+			updateTransformer(draft.draggables[draggableId].transformers, transformer);
 		});
 		detectCollisions();
 	};
@@ -567,24 +653,21 @@ const DragDropProvider = (passedProps) => {
 	};
 	const onDragStart = (handler) => {
 		createEffect(() => state.active.draggable, (draggable) => {
-			if (draggable) handler({ draggable });
+			if (draggable) untrack(() => handler({ draggable }));
 		});
 	};
 	const onDragMove = (handler) => {
 		createEffect(() => {
 			const draggable = state.active.draggable;
 			if (!draggable) return null;
-			const overlay = state.active.overlay;
+			const overlay = untrack(() => state.active.overlay);
+			Object.values(overlay ? overlay.transform : draggable.transform);
 			return {
 				draggable,
-				overlay,
-				transform: overlay ? overlay.transform : draggable.transform
+				overlay
 			};
 		}, (value) => {
-			if (value) handler({
-				draggable: value.draggable,
-				overlay: value.overlay
-			});
+			if (value) untrack(() => handler(value));
 		});
 	};
 	const onDragOver = (handler) => {
@@ -593,10 +676,10 @@ const DragDropProvider = (passedProps) => {
 			return draggable ? {
 				draggable,
 				droppable: state.active.droppable,
-				overlay: state.active.overlay
+				overlay: untrack(() => state.active.overlay)
 			} : null;
 		}, (value) => {
-			if (value) handler(value);
+			if (value) untrack(() => handler(value));
 		});
 	};
 	const onDragEnd = (handler) => {
@@ -608,11 +691,14 @@ const DragDropProvider = (passedProps) => {
 				overlay: draggable ? state.active.overlay : null
 			};
 		}, (current, previous) => {
-			if (!current.draggable && previous?.draggable) handler({
-				draggable: previous.draggable,
-				droppable: previous.droppable,
-				overlay: previous.overlay
-			});
+			if (!current.draggable && previous?.draggable) {
+				const event = {
+					draggable: previous.draggable,
+					droppable: previous.droppable,
+					overlay: previous.overlay
+				};
+				untrack(() => handler(event));
+			}
 		});
 	};
 	onDragMove(() => detectCollisions());
@@ -780,11 +866,17 @@ const createDraggable = (id, data = {}) => {
 			for (const key in activators) resolvedNode.removeEventListener(key, activators[key]);
 		};
 	});
-	createEffect(() => ({
-		node: node(),
-		transform: transform(),
-		skipTransform: skipTransform()
-	}), ({ node: resolvedNode, transform: resolvedTransform, skipTransform }) => {
+	createEffect(() => {
+		const { x, y } = transform();
+		return {
+			node: node(),
+			transform: {
+				x,
+				y
+			},
+			skipTransform: skipTransform()
+		};
+	}, ({ node: resolvedNode, transform: resolvedTransform, skipTransform }) => {
 		if (!resolvedNode || skipTransform) return;
 		if (!transformsAreEqual(resolvedTransform, noopTransform())) {
 			const style = transformStyle(resolvedTransform);
@@ -820,28 +912,41 @@ const createDraggable = (id, data = {}) => {
 //#endregion
 //#region src/create-droppable.ts
 const createDroppable = (id, data = {}) => {
+	return createDroppableWithTransformers(id, data, []);
+};
+const createDroppableWithTransformers = (id, data, transformers) => {
 	const [state, { addDroppable, removeDroppable }] = useDragDropContext();
 	const [node, setNode] = createSignal(null);
 	const [skipTransform, setSkipTransform] = createSignal(false);
 	onSettled(() => {
 		const resolvedNode = node();
-		if (resolvedNode) addDroppable({
-			id,
-			node: resolvedNode,
-			layout: elementLayout(resolvedNode),
-			data
-		});
-		return () => removeDroppable(id);
+		if (resolvedNode) {
+			const registration = {
+				id,
+				node: resolvedNode,
+				layout: elementLayout(resolvedNode),
+				data,
+				transformers: Object.fromEntries(transformers.map((transformer) => [transformer.id, transformer]))
+			};
+			addDroppable(registration);
+			return () => removeDroppable(id);
+		}
 	});
 	const isActiveDroppable = () => state.active.droppableId === id;
 	const transform = () => {
 		return state.droppables[id]?.transform || noopTransform();
 	};
-	createEffect(() => ({
-		node: node(),
-		transform: transform(),
-		skipTransform: skipTransform()
-	}), ({ node: resolvedNode, transform: resolvedTransform, skipTransform }) => {
+	createEffect(() => {
+		const { x, y } = transform();
+		return {
+			node: node(),
+			transform: {
+				x,
+				y
+			},
+			skipTransform: skipTransform()
+		};
+	}, ({ node: resolvedNode, transform: resolvedTransform, skipTransform }) => {
 		if (!resolvedNode || skipTransform) return;
 		if (!transformsAreEqual(resolvedTransform, noopTransform())) {
 			const style = transformStyle(resolvedTransform);
@@ -905,51 +1010,48 @@ const DragOverlay = (props) => {
     </Portal>;
 };
 //#endregion
-//#region src/move-array-item.ts
-const moveArrayItem = (array, fromIndex, toIndex) => {
-	const newArray = array.slice();
-	newArray.splice(toIndex, 0, ...newArray.splice(fromIndex, 1));
-	return newArray;
-};
-//#endregion
 //#region src/sortable-context.tsx
 const Context = createContext();
+const updateIds = (target, ids) => {
+	let changed = target.length !== ids.length;
+	for (let index = 0; index < ids.length; index++) if (target[index] !== ids[index]) {
+		target[index] = ids[index];
+		changed = true;
+	}
+	if (target.length !== ids.length) target.length = ids.length;
+	return changed;
+};
 const SortableProvider = (props) => {
 	const [dndState] = useDragDropContext();
 	const [state, setState] = createStore({
 		initialIds: [],
 		sortedIds: []
 	});
-	const isValidIndex = (index) => {
-		return index >= 0 && index < state.initialIds.length;
-	};
-	createEffect(() => props.ids, (ids) => {
-		setState((draft) => {
-			draft.initialIds = [...ids];
-			draft.sortedIds = [...ids];
-		});
-	});
 	createEffect(() => ({
 		draggableId: dndState.active.draggableId,
 		droppableId: dndState.active.droppableId,
-		ids: props.ids,
-		initialIds: untrack(() => [...state.initialIds]),
-		sortedIds: untrack(() => [...state.sortedIds])
-	}), ({ draggableId, droppableId, ids, initialIds, sortedIds }) => {
-		if (draggableId && droppableId) {
+		ids: [...props.ids]
+	}), ({ draggableId, droppableId, ids }) => {
+		setState((draft) => {
+			const { initialIds, sortedIds } = draft;
+			if (updateIds(initialIds, ids)) updateIds(sortedIds, ids);
+			if (draggableId === null || droppableId === null) {
+				updateIds(sortedIds, ids);
+				return;
+			}
 			const fromIndex = sortedIds.indexOf(draggableId);
 			const toIndex = initialIds.indexOf(droppableId);
-			if (!isValidIndex(fromIndex) || !isValidIndex(toIndex)) setState((draft) => {
-				draft.sortedIds = [...ids];
-			});
+			const isValidIndex = (index) => index >= 0 && index < initialIds.length && index < sortedIds.length;
+			if (!isValidIndex(fromIndex) || !isValidIndex(toIndex)) updateIds(sortedIds, ids);
 			else if (fromIndex !== toIndex) {
-				const resorted = moveArrayItem(sortedIds, fromIndex, toIndex);
-				setState((draft) => {
-					draft.sortedIds = resorted;
-				});
+				const movedId = sortedIds[fromIndex];
+				const direction = fromIndex < toIndex ? 1 : -1;
+				for (let index = fromIndex; index !== toIndex; index += direction) {
+					const nextId = sortedIds[index + direction];
+					if (sortedIds[index] !== nextId) sortedIds[index] = nextId;
+				}
+				if (sortedIds[toIndex] !== movedId) sortedIds[toIndex] = movedId;
 			}
-		} else setState((draft) => {
-			draft.sortedIds = [...ids];
 		});
 	});
 	const context = [state, {}];
@@ -961,16 +1063,10 @@ const useSortableContext = () => {
 //#endregion
 //#region src/create-sortable.ts
 const createSortable = (id, data = {}) => {
-	const [dndState, { addTransformer, removeTransformer }] = useDragDropContext();
+	const [dndState] = useDragDropContext();
 	const [sortableState] = useSortableContext();
 	const draggable = createDraggable(id, data);
-	const droppable = createDroppable(id, data);
 	const [node, setNode] = createSignal(null);
-	const setRefs = (element) => {
-		draggable.ref(element);
-		droppable.ref(element);
-		setNode(element);
-	};
 	const initialIndex = () => sortableState.initialIds.indexOf(id);
 	const currentIndex = () => sortableState.sortedIds.indexOf(id);
 	const layoutById = (id) => dndState.droppables[id]?.layout || null;
@@ -988,7 +1084,7 @@ const createSortable = (id, data = {}) => {
 		}
 		return delta;
 	};
-	const transformer = {
+	const droppable = createDroppableWithTransformers(id, data, [{
 		id: "sortableOffset",
 		order: 100,
 		callback: (transform) => {
@@ -998,18 +1094,25 @@ const createSortable = (id, data = {}) => {
 				y: transform.y + delta.y
 			};
 		}
+	}]);
+	const setRefs = (element) => {
+		draggable.ref(element);
+		droppable.ref(element);
+		setNode(element);
 	};
-	onSettled(() => {
-		addTransformer("droppables", id, transformer);
-		return () => removeTransformer("droppables", id, transformer.id);
-	});
 	const transform = () => {
 		return (id === dndState.active.draggableId && !dndState.active.overlay ? dndState.draggables[id]?.transform : dndState.droppables[id]?.transform) || noopTransform();
 	};
-	createEffect(() => ({
-		node: node(),
-		transform: transform()
-	}), ({ node: resolvedNode, transform: resolvedTransform }) => {
+	createEffect(() => {
+		const { x, y } = transform();
+		return {
+			node: node(),
+			transform: {
+				x,
+				y
+			}
+		};
+	}, ({ node: resolvedNode, transform: resolvedTransform }) => {
 		if (!resolvedNode) return;
 		if (!transformsAreEqual(resolvedTransform, noopTransform())) {
 			const style = transformStyle(resolvedTransform);

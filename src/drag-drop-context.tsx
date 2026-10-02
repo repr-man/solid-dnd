@@ -1,6 +1,11 @@
 import {
   createContext,
   createEffect,
+  createMemo,
+  createRoot,
+  getOwner,
+  isDisposed,
+  runWithOwner,
   merge,
   untrack,
   useContext,
@@ -16,6 +21,7 @@ import {
   Transform,
   noopTransform,
   transformLayout,
+  transformsAreEqual,
 } from "./layout";
 
 type Id = string | number;
@@ -185,6 +191,49 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
     },
   });
 
+  const providerOwner = getOwner()!;
+  const geometryDisposers = new WeakMap<object, () => void>();
+
+  // Store getters run in their reader's scope. Owned memos share geometry and
+  // stop equivalent results from invalidating every reader of the getter.
+  const createGeometry = (
+    type: "draggables" | "droppables",
+    id: Id,
+    initialLayout: Layout
+  ) =>
+    runWithOwner(providerOwner, () =>
+      createRoot((dispose) => {
+        const transform = createMemo(
+          () => {
+            const item = state[type][id];
+            if (!item || (type === "draggables" && state.active.overlay)) {
+              return noopTransform();
+            }
+
+            const transformers = Object.values(item.transformers);
+            transformers.sort((a, b) => a.order - b.order);
+            const result = transformers.reduce(
+              (transform, transformer) => transformer.callback(transform),
+              noopTransform()
+            );
+            // A callback may return a store proxy. Capture its leaves so the
+            // previous value cannot change underneath the equality comparison.
+            return { x: result.x, y: result.y };
+          },
+          { equals: transformsAreEqual, name: `${type}.${id}.transform` }
+        );
+        const transformed = createMemo(
+          () =>
+            transformLayout(
+              state[type][id]?.layout ?? initialLayout,
+              transform()
+            ),
+          { equals: layoutsAreEqual, name: `${type}.${id}.transformed` }
+        );
+        return { transform, transformed, dispose };
+      })
+    );
+
   // Object merges retain store identity. Tokens distinguish registrations so
   // delayed disposal cannot remove an entry that has since been re-registered.
   const registrationTokens = new WeakMap<object, object>();
@@ -277,7 +326,9 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
     layout,
     data,
   }) => {
+    if (isDisposed(providerOwner)) return;
     const existingDraggable = state.draggables[id];
+    const geometry = createGeometry("draggables", id, layout);
 
     const draggable = {
       id,
@@ -298,31 +349,12 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
       transform: {
         enumerable: true,
         configurable: true,
-        get: () => {
-          if (state.active.overlay) {
-            return noopTransform();
-          }
-
-          const transformers = Object.values(state.draggables[id].transformers);
-          transformers.sort((a, b) => a.order - b.order);
-
-          return transformers.reduce(
-            (transform: Transform, transformer: Transformer) => {
-              return transformer.callback(transform);
-            },
-            noopTransform()
-          );
-        },
+        get: geometry.transform,
       },
       transformed: {
         enumerable: true,
         configurable: true,
-        get: () => {
-          return transformLayout(
-            state.draggables[id].layout,
-            state.draggables[id].transform
-          );
-        },
+        get: geometry.transformed,
       },
     });
     if (
@@ -358,6 +390,9 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
     setState((draft) => {
       const existing = draft.draggables[id];
       if (existing) {
+        // The draft may already contain a registration not yet committed.
+        // Keep its geometry and discard the unused prospective root.
+        geometry.dispose();
         // Merge only registration fields, preserving accessors and metadata.
         Object.assign(existing, {
           id,
@@ -368,6 +403,7 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
         });
       } else {
         draft.draggables[id] = draggable as Draggable;
+        geometryDisposers.set(draft.draggables[id], geometry.dispose);
       }
       registrationTokens.set(draft.draggables[id], {});
       if (transformer) {
@@ -410,6 +446,8 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
       draggable._pendingCleanup
     ) {
       const cleanupActive = state.active.draggableId === id;
+      geometryDisposers.get(draggable)?.();
+      geometryDisposers.delete(draggable);
       setState((draft) => {
         if (cleanupActive) {
           draft.active.draggableId = null;
@@ -426,6 +464,8 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
     data,
     transformers,
   }: DroppableRegistration) => {
+    if (isDisposed(providerOwner)) return;
+    const geometry = createGeometry("droppables", id, layout);
     const droppable = {
       id,
       node,
@@ -446,33 +486,19 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
       transform: {
         enumerable: true,
         configurable: true,
-        get: () => {
-          const transformers = Object.values(state.droppables[id].transformers);
-          transformers.sort((a, b) => a.order - b.order);
-
-          return transformers.reduce(
-            (transform: Transform, transformer: Transformer) => {
-              return transformer.callback(transform);
-            },
-            noopTransform()
-          );
-        },
+        get: geometry.transform,
       },
       transformed: {
         enumerable: true,
         configurable: true,
-        get: () => {
-          return transformLayout(
-            state.droppables[id].layout,
-            state.droppables[id].transform
-          );
-        },
+        get: geometry.transformed,
       },
     });
 
     setState((draft) => {
       const existing = draft.droppables[id];
       if (existing) {
+        geometry.dispose();
         Object.assign(existing, {
           id,
           node,
@@ -486,6 +512,7 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
         }
       } else {
         draft.droppables[id] = droppable as Droppable;
+        geometryDisposers.set(draft.droppables[id], geometry.dispose);
       }
       registrationTokens.set(draft.droppables[id], {});
     });
@@ -525,6 +552,8 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
       droppable._pendingCleanup
     ) {
       const cleanupActive = state.active.droppableId === id;
+      geometryDisposers.get(droppable)?.();
+      geometryDisposers.delete(droppable);
       setState((draft) => {
         if (cleanupActive) {
           draft.active.droppableId = null;
