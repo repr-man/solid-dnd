@@ -65,11 +65,14 @@ const createDraggable = (id: Id, data: Record<string, any> = {}): Draggable => {
   );
 
   createEffect(
-    () => ({
-      node: node(),
-      transform: transform(),
-      skipTransform: skipTransform(),
-    }),
+    () => {
+      const { x, y } = transform();
+      return {
+        node: node(),
+        transform: { x, y },
+        skipTransform: skipTransform(),
+      };
+    },
     ({ node: resolvedNode, transform: resolvedTransform, skipTransform }) => {
       if (!resolvedNode || skipTransform) return;
 

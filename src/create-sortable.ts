@@ -78,7 +78,10 @@ const createSortable = (id: Id, data: Record<string, any> = {}): Sortable => {
   };
 
   createEffect(
-    () => ({ node: node(), transform: transform() }),
+    () => {
+      const { x, y } = transform();
+      return { node: node(), transform: { x, y } };
+    },
     ({ node: resolvedNode, transform: resolvedTransform }) => {
       if (!resolvedNode) return;
 

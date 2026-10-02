@@ -766,7 +766,7 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
       () => state.active.draggable,
       (draggable) => {
         if (draggable) {
-          handler({ draggable });
+          untrack(() => handler({ draggable }));
         }
       }
     );
@@ -778,13 +778,14 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
         const draggable = state.active.draggable;
         if (!draggable) return null;
 
-        const overlay = state.active.overlay;
-        const transform = overlay ? overlay.transform : draggable.transform;
-        return { draggable, overlay, transform };
+        const overlay = untrack(() => state.active.overlay);
+        // Track movement coordinates, even when the transform object is stable.
+        Object.values(overlay ? overlay.transform : draggable.transform);
+        return { draggable, overlay };
       },
       (value) => {
         if (value) {
-          handler({ draggable: value.draggable, overlay: value.overlay });
+          untrack(() => handler(value));
         }
       }
     );
@@ -798,13 +799,13 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
           ? {
               draggable,
               droppable: state.active.droppable,
-              overlay: state.active.overlay,
+              overlay: untrack(() => state.active.overlay),
             }
           : null;
       },
       (value) => {
         if (value) {
-          handler(value);
+          untrack(() => handler(value));
         }
       }
     );
@@ -820,11 +821,12 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
       },
       (current, previous) => {
         if (!current.draggable && previous?.draggable) {
-          handler({
+          const event = {
             draggable: previous.draggable,
             droppable: previous.droppable,
             overlay: previous.overlay,
-          });
+          };
+          untrack(() => handler(event));
         }
       }
     );
