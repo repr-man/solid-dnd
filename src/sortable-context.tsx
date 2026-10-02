@@ -1,15 +1,7 @@
-import {
-  createContext,
-  createEffect,
-  createStore,
-  onSettled,
-  untrack,
-  useContext,
-} from "solid-js";
+import { createContext, createEffect, createStore, useContext } from "solid-js";
 import type { ParentComponent, Store } from "solid-js";
 
 import { Id, useDragDropContext } from "./drag-drop-context";
-import { moveArrayItem } from "./move-array-item";
 
 interface SortableContextState {
   initialIds: Array<Id>;
@@ -24,6 +16,19 @@ type SortableContext = [Store<SortableContextState>, {}];
 
 const Context = createContext<SortableContext>();
 
+// Retain the store array and leave unchanged indices untouched.
+const updateIds = (target: Id[], ids: readonly Id[]): boolean => {
+  let changed = target.length !== ids.length;
+  for (let index = 0; index < ids.length; index++) {
+    if (target[index] !== ids[index]) {
+      target[index] = ids[index];
+      changed = true;
+    }
+  }
+  if (target.length !== ids.length) target.length = ids.length;
+  return changed;
+};
+
 const SortableProvider: ParentComponent<SortableContextProps> = (props) => {
   const [dndState] = useDragDropContext()!;
 
@@ -32,48 +37,40 @@ const SortableProvider: ParentComponent<SortableContextProps> = (props) => {
     sortedIds: [],
   });
 
-  const isValidIndex = (index: number): boolean => {
-    return index >= 0 && index < state.initialIds.length;
-  };
-
-  createEffect(
-    () => props.ids,
-    (ids) => {
-      setState((draft) => {
-        draft.initialIds = [...ids];
-        draft.sortedIds = [...ids];
-      });
-    }
-  );
-
   createEffect(
     () => ({
       draggableId: dndState.active.draggableId,
       droppableId: dndState.active.droppableId,
-      ids: props.ids,
-      initialIds: untrack(() => [...state.initialIds]),
-      sortedIds: untrack(() => [...state.sortedIds]),
+      ids: [...props.ids],
     }),
-    ({ draggableId, droppableId, ids, initialIds, sortedIds }) => {
-      if (draggableId && droppableId) {
+    ({ draggableId, droppableId, ids }) => {
+      setState((draft) => {
+        const { initialIds, sortedIds } = draft;
+        // Synchronize before calculating the preview, using the current draft.
+        if (updateIds(initialIds, ids)) updateIds(sortedIds, ids);
+
+        if (draggableId === null || droppableId === null) {
+          updateIds(sortedIds, ids);
+          return;
+        }
+
         const fromIndex = sortedIds.indexOf(draggableId);
         const toIndex = initialIds.indexOf(droppableId);
+        const isValidIndex = (index: number): boolean =>
+          index >= 0 && index < initialIds.length && index < sortedIds.length;
 
         if (!isValidIndex(fromIndex) || !isValidIndex(toIndex)) {
-          setState((draft) => {
-            draft.sortedIds = [...ids];
-          });
+          updateIds(sortedIds, ids);
         } else if (fromIndex !== toIndex) {
-          const resorted = moveArrayItem(sortedIds, fromIndex, toIndex);
-          setState((draft) => {
-            draft.sortedIds = resorted;
-          });
+          const movedId = sortedIds[fromIndex];
+          const direction = fromIndex < toIndex ? 1 : -1;
+          for (let index = fromIndex; index !== toIndex; index += direction) {
+            const nextId = sortedIds[index + direction];
+            if (sortedIds[index] !== nextId) sortedIds[index] = nextId;
+          }
+          if (sortedIds[toIndex] !== movedId) sortedIds[toIndex] = movedId;
         }
-      } else {
-        setState((draft) => {
-          draft.sortedIds = [...ids];
-        });
-      }
+      });
     }
   );
 
