@@ -3,6 +3,7 @@ import {
   createEffect,
   createMemo,
   createRoot,
+  createSignal,
   getOwner,
   isDisposed,
   runWithOwner,
@@ -146,6 +147,26 @@ interface DragDropContextProps {
 
 type DragDropContext = [Store<DragDropState>, DragDropActions];
 
+interface SensorRegistration {
+  isCurrent(): boolean;
+  isActive(): boolean;
+  end(): void;
+  dispose(): void;
+}
+
+// Pointer sensors retain their registration generation without changing the
+// public addSensor/removeSensor actions.
+// A stable symbol keeps the private registrar available across hot reloads.
+const sensorRegistrar = Symbol.for("@thisbeyond/solid-dnd.registerSensor");
+interface SensorActions extends DragDropActions {
+  [sensorRegistrar](sensor: Omit<Sensor, "coordinates">): SensorRegistration;
+}
+
+const registerSensorWithCleanup = (
+  actions: DragDropActions,
+  sensor: Omit<Sensor, "coordinates">
+): SensorRegistration => (actions as SensorActions)[sensorRegistrar](sensor);
+
 type Listeners = Record<
   string,
   (event: HTMLElementEventMap[keyof HTMLElementEventMap]) => void
@@ -175,7 +196,9 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
           ? state.draggables[state.active.draggableId]
           : null;
       },
-      droppableId: null,
+      get droppableId(): Id | null {
+        return collisionSelection().droppableId;
+      },
       get droppable(): Droppable | null {
         return state.active.droppableId !== null
           ? state.droppables[state.active.droppableId]
@@ -194,6 +217,61 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
   const providerOwner = getOwner()!;
   const geometryDisposers = new WeakMap<object, () => void>();
 
+  // Explicit detection also re-evaluates geometry backed by nonreactive inputs.
+  const [geometryRevision, setGeometryRevision] = createSignal(0, {
+    name: "dnd.geometryRevision",
+  });
+  const [collisionLifecycle, setCollisionLifecycle] = createSignal(
+    { epoch: 0, enabled: false },
+    { name: "dnd.collisionLifecycle" }
+  );
+  const collisionSelection = createMemo<{
+    epoch: number;
+    droppableId: Id | null;
+    registered: boolean;
+  }>(
+    (previous) => {
+      const { epoch, enabled } = collisionLifecycle();
+      geometryRevision();
+      let droppableId = previous?.epoch === epoch ? previous.droppableId : null;
+      if (
+        droppableId !== null &&
+        previous?.registered &&
+        !state.droppables[droppableId]
+      ) {
+        droppableId = null;
+      }
+
+      if (!enabled) return { epoch, droppableId: null, registered: false };
+
+      const draggable = state.active.overlay ?? state.active.draggable;
+      if (draggable) {
+        // Preserve movement dependencies even if a custom detector does not
+        // read geometry. Previous-target context must not read our own output.
+        Object.values(draggable.transform);
+        const droppable = props.collisionDetector(
+          draggable,
+          Object.values(state.droppables),
+          { activeDroppableId: droppableId }
+        );
+        droppableId = droppable ? droppable.id : null;
+      }
+
+      return {
+        epoch,
+        droppableId,
+        registered: droppableId !== null && !!state.droppables[droppableId],
+      };
+    },
+    {
+      name: "dnd.collisionSelection",
+      equals: (previous, next) =>
+        previous.epoch === next.epoch &&
+        previous.droppableId === next.droppableId &&
+        previous.registered === next.registered,
+    }
+  );
+
   // Store getters run in their reader's scope. Owned memos share geometry and
   // stop equivalent results from invalidating every reader of the getter.
   const createGeometry = (
@@ -205,6 +283,7 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
       createRoot((dispose) => {
         const transform = createMemo(
           () => {
+            geometryRevision();
             const item = state[type][id];
             if (!item || (type === "draggables" && state.active.overlay)) {
               return noopTransform();
@@ -223,11 +302,13 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
           { equals: transformsAreEqual, name: `${type}.${id}.transform` }
         );
         const transformed = createMemo(
-          () =>
-            transformLayout(
+          () => {
+            geometryRevision();
+            return transformLayout(
               state[type][id]?.layout ?? initialLayout,
               transform()
-            ),
+            );
+          },
           { equals: layoutsAreEqual, name: `${type}.${id}.transformed` }
         );
         return { transform, transformed, dispose };
@@ -237,6 +318,8 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
   // Object merges retain store identity. Tokens distinguish registrations so
   // delayed disposal cannot remove an entry that has since been re-registered.
   const registrationTokens = new WeakMap<object, object>();
+  // Replacing a registry entry must not transfer an existing drag's ownership.
+  let activeSensorToken: object | undefined;
   const isCurrentRegistration = (
     current: object | null | undefined,
     entry: object,
@@ -551,19 +634,20 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
       isCurrentRegistration(state.droppables[id], droppable, token) &&
       droppable._pendingCleanup
     ) {
-      const cleanupActive = state.active.droppableId === id;
       geometryDisposers.get(droppable)?.();
       geometryDisposers.delete(droppable);
       setState((draft) => {
-        if (cleanupActive) {
-          draft.active.droppableId = null;
-        }
         delete draft.droppables[id];
       });
     }
   };
 
-  const addSensor: DragDropActions["addSensor"] = ({ id, activators }) => {
+  const registerSensor = ({
+    id,
+    activators,
+  }: Omit<Sensor, "coordinates">): SensorRegistration => {
+    let registeredSensor!: Sensor;
+    const token = {};
     setState((draft) => {
       const sensor: Sensor = {
         id,
@@ -591,8 +675,77 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
       } else {
         draft.sensors[id] = sensor;
       }
-      registrationTokens.set(draft.sensors[id], {});
+      registeredSensor = draft.sensors[id];
+      registrationTokens.set(registeredSensor, token);
     });
+
+    return {
+      isCurrent: () =>
+        untrack(
+          () =>
+            !isDisposed(providerOwner) &&
+            isCurrentRegistration(state.sensors[id], registeredSensor, token)
+        ),
+      isActive: () =>
+        untrack(
+          () =>
+            !isDisposed(providerOwner) &&
+            activeSensorToken === token &&
+            state.active.sensorId === id
+        ),
+      end: () => cleanupSensorRegistration(id, registeredSensor, token, false),
+      dispose: () => removeSensorRegistration(id, registeredSensor, token),
+    };
+  };
+
+  const removeSensorRegistration = (
+    id: Id,
+    sensor: Sensor,
+    token: object | undefined
+  ): void => {
+    queueMicrotask(() => cleanupSensorRegistration(id, sensor, token));
+  };
+
+  const cleanupSensorRegistration = (
+    id: Id,
+    sensor: Sensor,
+    token: object | undefined,
+    remove = true
+  ): void => {
+    if (isDisposed(providerOwner)) return;
+
+    let endedDrag = false;
+    setState((draft) => {
+      // Check the draft too: a replacement can already be staged while the
+      // committed record still exposes the old registration.
+      const current = isCurrentRegistration(draft.sensors[id], sensor, token);
+      const ownsActive = token !== undefined && activeSensorToken === token;
+      if (!current && !ownsActive) return;
+
+      if (draft.active.sensorId === id && (ownsActive || (current && remove))) {
+        const draggableId = draft.active.draggableId;
+        if (draggableId !== null && draft.draggables[draggableId]) {
+          delete draft.draggables[draggableId].transformers.sensorMove;
+        }
+        draft.active.draggableId = null;
+        endedDrag = true;
+        draft.active.sensorId = null;
+        activeSensorToken = undefined;
+      }
+      if (remove && current) delete draft.sensors[id];
+    });
+
+    if (endedDrag) {
+      setCollisionLifecycle(({ epoch }) => ({
+        epoch: epoch + 1,
+        enabled: false,
+      }));
+      recomputeLayouts();
+    }
+  };
+
+  const addSensor: DragDropActions["addSensor"] = (sensor) => {
+    registerSensor(sensor);
   };
 
   const removeSensor: DragDropActions["removeSensor"] = (id) => {
@@ -601,19 +754,7 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
       console.warn(`Cannot remove nonexistent sensor with id: ${id}`);
       return;
     }
-    const token = registrationTokens.get(sensor);
-
-    queueMicrotask(() => {
-      if (!isCurrentRegistration(state.sensors[id], sensor, token)) return;
-
-      const cleanupActive = state.active.sensorId === id;
-      setState((draft) => {
-        if (cleanupActive) {
-          draft.active.sensorId = null;
-        }
-        delete draft.sensors[id];
-      });
-    });
+    removeSensorRegistration(id, sensor, registrationTokens.get(sensor));
   };
 
   const setOverlay: DragDropActions["setOverlay"] = ({ node, layout }) => {
@@ -696,6 +837,7 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
       origin.y = y;
       current.x = x;
       current.y = y;
+      activeSensorToken = registrationTokens.get(draft.sensors[id]);
       draft.active.sensorId = id;
     });
   };
@@ -718,6 +860,7 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
   const sensorEnd: DragDropActions["sensorEnd"] = () =>
     setState((draft) => {
       draft.active.sensorId = null;
+      activeSensorToken = undefined;
     });
 
   const draggableActivators: DragDropActions["draggableActivators"] = (
@@ -783,7 +926,10 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
             cache.set(draggable.node, elementLayout(draggable.node));
           const layout = cache.get(draggable.node)!;
 
-          if (!layoutsAreEqual(currentLayout, layout)) {
+          if (
+            draft.draggables[draggable.id]?.node === draggable.node &&
+            !layoutsAreEqual(currentLayout, layout)
+          ) {
             draft.draggables[draggable.id].layout = layout;
             anyLayoutChanged = true;
           }
@@ -798,7 +944,10 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
             cache.set(droppable.node, elementLayout(droppable.node));
           const layout = cache.get(droppable.node)!;
 
-          if (!layoutsAreEqual(currentLayout, layout)) {
+          if (
+            draft.droppables[droppable.id]?.node === droppable.node &&
+            !layoutsAreEqual(currentLayout, layout)
+          ) {
             draft.droppables[droppable.id].layout = layout;
             anyLayoutChanged = true;
           }
@@ -808,7 +957,10 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
       if (overlay) {
         const currentLayout = overlay.layout;
         const layout = elementLayout(overlay.node);
-        if (!layoutsAreEqual(currentLayout, layout)) {
+        if (
+          draft.active.overlay?.node === overlay.node &&
+          !layoutsAreEqual(currentLayout, layout)
+        ) {
           draft.active.overlay!.layout = layout;
           anyLayoutChanged = true;
         }
@@ -819,24 +971,14 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
   };
 
   const detectCollisions: DragDropActions["detectCollisions"] = () => {
-    const draggable = state.active.overlay ?? state.active.draggable;
-    if (draggable) {
-      const droppable = props.collisionDetector(
-        draggable,
-        Object.values(state.droppables),
-        {
-          activeDroppableId: state.active.droppableId,
-        }
-      );
-
-      const droppableId: Id | null = droppable ? droppable.id : null;
-
-      if (state.active.droppableId !== droppableId) {
-        setState((draft) => {
-          draft.active.droppableId = droppableId;
-        });
-      }
-    }
+    // Force a fresh geometry/selection pass at the next flush, rather than
+    // reading a potentially cached winner.
+    // Explicit calls can also detect against an overlay retained after drag end.
+    const hasOverlay = untrack(() => state.active.overlay !== null);
+    setCollisionLifecycle((current) =>
+      current.enabled || !hasOverlay ? current : { ...current, enabled: true }
+    );
+    setGeometryRevision((revision) => revision + 1);
   };
 
   const dragStart: DragDropActions["dragStart"] = (draggableId) => {
@@ -855,6 +997,7 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
     };
 
     recomputeLayouts();
+    setCollisionLifecycle(({ epoch }) => ({ epoch, enabled: true }));
 
     setState((draft) => {
       draft.active.draggableId = draggableId;
@@ -869,12 +1012,15 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
 
   const dragEnd: DragDropActions["dragEnd"] = () => {
     const draggableId = untrack(() => state.active.draggableId);
+    setCollisionLifecycle(({ epoch }) => ({
+      epoch: epoch + 1,
+      enabled: false,
+    }));
     setState((draft) => {
       if (draggableId !== null) {
         delete draft.draggables[draggableId].transformers.sensorMove;
       }
       draft.active.draggableId = null;
-      draft.active.droppableId = null;
     });
 
     recomputeLayouts();
@@ -951,8 +1097,6 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
     );
   };
 
-  onDragMove(() => detectCollisions());
-
   const onDragStartProp = untrack(() => props.onDragStart);
   const onDragMoveProp = untrack(() => props.onDragMove);
   const onDragOverProp = untrack(() => props.onDragOver);
@@ -964,6 +1108,7 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
   onDragEndProp && onDragEnd(onDragEndProp);
 
   const actions = {
+    [sensorRegistrar]: registerSensor,
     addTransformer,
     removeTransformer,
     addDraggable,
@@ -997,7 +1142,12 @@ const useDragDropContext = (): DragDropContext | null => {
   return useContext(Context) || null;
 };
 
-export { Context, DragDropProvider, useDragDropContext };
+export {
+  Context,
+  DragDropProvider,
+  useDragDropContext,
+  registerSensorWithCleanup,
+};
 export type {
   Id,
   Coordinates,

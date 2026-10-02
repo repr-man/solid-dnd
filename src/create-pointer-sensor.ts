@@ -1,36 +1,41 @@
-import { onSettled } from "solid-js";
+import { onSettled, untrack } from "solid-js";
 
 import {
   Coordinates,
   Id,
   SensorActivator,
+  registerSensorWithCleanup,
   useDragDropContext,
 } from "./drag-drop-context";
 import { Transform } from "./layout";
 
 const createPointerSensor = (id: Id = "pointer-sensor"): void => {
-  const [
-    state,
-    {
-      addSensor,
-      removeSensor,
-      sensorStart,
-      sensorMove,
-      sensorEnd,
-      dragStart,
-      dragEnd,
-    },
-  ] = useDragDropContext()!;
+  const [state, actions] = useDragDropContext()!;
+  const { sensorStart, sensorMove, dragStart } = actions;
   const activationDelay = 250; // milliseconds
   const activationDistance = 10; // pixels
+  let registration: ReturnType<typeof registerSensorWithCleanup> | null = null;
+  let disposed = false;
+  let activated = false;
 
   onSettled(() => {
-    addSensor({ id, activators: { pointerdown: attach } });
+    const registered = registerSensorWithCleanup(actions, {
+      id,
+      activators: { pointerdown: attach },
+    });
+    registration = registered;
 
-    return () => removeSensor(id);
+    return () => {
+      if (disposed) return;
+      disposed = true;
+      // Native resources are released immediately; registry/drag writes are
+      // deferred by the registration handle until outside owner disposal.
+      detach();
+      registered.dispose();
+    };
   });
 
-  const isActiveSensor = () => state.active.sensorId === id;
+  const isActiveSensor = () => registration?.isActive();
 
   const initialCoordinates: Coordinates = { x: 0, y: 0 };
 
@@ -38,7 +43,15 @@ const createPointerSensor = (id: Id = "pointer-sensor"): void => {
   let activationDraggableId: Id | null = null;
 
   const attach: SensorActivator<"pointerdown"> = (event, draggableId) => {
-    if (event.button !== 0) return;
+    if (
+      event.button !== 0 ||
+      disposed ||
+      activated ||
+      !registration?.isCurrent()
+    )
+      return;
+
+    detach();
 
     document.addEventListener("pointermove", onPointerMove);
     document.addEventListener("pointerup", onPointerUp);
@@ -50,21 +63,41 @@ const createPointerSensor = (id: Id = "pointer-sensor"): void => {
     activationDelayTimeoutId = window.setTimeout(onActivate, activationDelay);
   };
 
-  const detach = (): void => {
-    if (activationDelayTimeoutId) {
+  const clearActivationTimer = (): void => {
+    if (activationDelayTimeoutId !== null) {
       clearTimeout(activationDelayTimeoutId);
       activationDelayTimeoutId = null;
     }
+  };
+
+  const detach = (): void => {
+    clearActivationTimer();
+    activationDraggableId = null;
+    activated = false;
 
     document.removeEventListener("pointermove", onPointerMove);
     document.removeEventListener("pointerup", onPointerUp);
     document.removeEventListener("selectionchange", clearSelection);
   };
 
+  const cancel = (): void => {
+    const wasActivated = activated;
+    detach();
+    if (wasActivated) registration?.end();
+  };
+
   const onActivate = (): void => {
-    if (!state.active.sensor) {
+    if (disposed || !registration?.isCurrent()) {
+      cancel();
+      return;
+    }
+    if (activated || activationDraggableId === null) return;
+
+    clearActivationTimer();
+    if (!untrack(() => state.active.sensor)) {
+      activated = true;
       sensorStart(id, initialCoordinates);
-      dragStart(activationDraggableId!);
+      dragStart(activationDraggableId);
 
       clearSelection();
       document.addEventListener("selectionchange", clearSelection);
@@ -74,9 +107,15 @@ const createPointerSensor = (id: Id = "pointer-sensor"): void => {
   };
 
   const onPointerMove = (event: PointerEvent): void => {
+    if (disposed || !registration?.isCurrent()) {
+      cancel();
+      return;
+    }
+    if (activationDraggableId === null) return;
+
     const coordinates: Coordinates = { x: event.clientX, y: event.clientY };
 
-    if (!state.active.sensor) {
+    if (!activated && !untrack(() => state.active.sensor)) {
       const transform: Transform = {
         x: coordinates.x - initialCoordinates.x,
         y: coordinates.y - initialCoordinates.y,
@@ -94,12 +133,8 @@ const createPointerSensor = (id: Id = "pointer-sensor"): void => {
   };
 
   const onPointerUp = (event: PointerEvent): void => {
-    detach();
-    if (isActiveSensor()) {
-      event.preventDefault();
-      dragEnd();
-      sensorEnd();
-    }
+    if (activated) event.preventDefault();
+    cancel();
   };
 
   const clearSelection = () => {

@@ -170,6 +170,8 @@ const mostIntersecting = (draggable, droppables, context) => {
 };
 //#endregion
 //#region src/drag-drop-context.tsx
+const sensorRegistrar = Symbol.for("@thisbeyond/solid-dnd.registerSensor");
+const registerSensorWithCleanup = (actions, sensor) => actions[sensorRegistrar](sensor);
 const Context$1 = createContext();
 const DragDropProvider = (passedProps) => {
 	const props = merge({ collisionDetector: mostIntersecting }, passedProps);
@@ -182,7 +184,9 @@ const DragDropProvider = (passedProps) => {
 			get draggable() {
 				return state.active.draggableId !== null ? state.draggables[state.active.draggableId] : null;
 			},
-			droppableId: null,
+			get droppableId() {
+				return collisionSelection().droppableId;
+			},
 			get droppable() {
 				return state.active.droppableId !== null ? state.droppables[state.active.droppableId] : null;
 			},
@@ -195,8 +199,39 @@ const DragDropProvider = (passedProps) => {
 	});
 	const providerOwner = getOwner();
 	const geometryDisposers = /* @__PURE__ */ new WeakMap();
+	const [geometryRevision, setGeometryRevision] = createSignal(0, { name: "dnd.geometryRevision" });
+	const [collisionLifecycle, setCollisionLifecycle] = createSignal({
+		epoch: 0,
+		enabled: false
+	}, { name: "dnd.collisionLifecycle" });
+	const collisionSelection = createMemo((previous) => {
+		const { epoch, enabled } = collisionLifecycle();
+		geometryRevision();
+		let droppableId = previous?.epoch === epoch ? previous.droppableId : null;
+		if (droppableId !== null && previous?.registered && !state.droppables[droppableId]) droppableId = null;
+		if (!enabled) return {
+			epoch,
+			droppableId: null,
+			registered: false
+		};
+		const draggable = state.active.overlay ?? state.active.draggable;
+		if (draggable) {
+			Object.values(draggable.transform);
+			const droppable = props.collisionDetector(draggable, Object.values(state.droppables), { activeDroppableId: droppableId });
+			droppableId = droppable ? droppable.id : null;
+		}
+		return {
+			epoch,
+			droppableId,
+			registered: droppableId !== null && !!state.droppables[droppableId]
+		};
+	}, {
+		name: "dnd.collisionSelection",
+		equals: (previous, next) => previous.epoch === next.epoch && previous.droppableId === next.droppableId && previous.registered === next.registered
+	});
 	const createGeometry = (type, id, initialLayout) => runWithOwner(providerOwner, () => createRoot((dispose) => {
 		const transform = createMemo(() => {
+			geometryRevision();
 			const item = state[type][id];
 			if (!item || type === "draggables" && state.active.overlay) return noopTransform();
 			const transformers = Object.values(item.transformers);
@@ -212,7 +247,10 @@ const DragDropProvider = (passedProps) => {
 		});
 		return {
 			transform,
-			transformed: createMemo(() => transformLayout(state[type][id]?.layout ?? initialLayout, transform()), {
+			transformed: createMemo(() => {
+				geometryRevision();
+				return transformLayout(state[type][id]?.layout ?? initialLayout, transform());
+			}, {
 				equals: layoutsAreEqual,
 				name: `${type}.${id}.transformed`
 			}),
@@ -220,6 +258,7 @@ const DragDropProvider = (passedProps) => {
 		};
 	}));
 	const registrationTokens = /* @__PURE__ */ new WeakMap();
+	let activeSensorToken;
 	const isCurrentRegistration = (current, entry, token) => current === entry && registrationTokens.get(entry) === token;
 	const updateTransformer = (transformers, transformer) => {
 		const existing = transformers[transformer.id];
@@ -419,16 +458,16 @@ const DragDropProvider = (passedProps) => {
 	};
 	const cleanupDroppable = (id, droppable, token) => {
 		if (isCurrentRegistration(state.droppables[id], droppable, token) && droppable._pendingCleanup) {
-			const cleanupActive = state.active.droppableId === id;
 			geometryDisposers.get(droppable)?.();
 			geometryDisposers.delete(droppable);
 			setState((draft) => {
-				if (cleanupActive) draft.active.droppableId = null;
 				delete draft.droppables[id];
 			});
 		}
 	};
-	const addSensor = ({ id, activators }) => {
+	const registerSensor = ({ id, activators }) => {
+		let registeredSensor;
+		const token = {};
 		setState((draft) => {
 			const sensor = {
 				id,
@@ -453,8 +492,46 @@ const DragDropProvider = (passedProps) => {
 			const existing = draft.sensors[id];
 			if (existing) Object.assign(existing, sensor);
 			else draft.sensors[id] = sensor;
-			registrationTokens.set(draft.sensors[id], {});
+			registeredSensor = draft.sensors[id];
+			registrationTokens.set(registeredSensor, token);
 		});
+		return {
+			isCurrent: () => untrack(() => !isDisposed(providerOwner) && isCurrentRegistration(state.sensors[id], registeredSensor, token)),
+			isActive: () => untrack(() => !isDisposed(providerOwner) && activeSensorToken === token && state.active.sensorId === id),
+			end: () => cleanupSensorRegistration(id, registeredSensor, token, false),
+			dispose: () => removeSensorRegistration(id, registeredSensor, token)
+		};
+	};
+	const removeSensorRegistration = (id, sensor, token) => {
+		queueMicrotask(() => cleanupSensorRegistration(id, sensor, token));
+	};
+	const cleanupSensorRegistration = (id, sensor, token, remove = true) => {
+		if (isDisposed(providerOwner)) return;
+		let endedDrag = false;
+		setState((draft) => {
+			const current = isCurrentRegistration(draft.sensors[id], sensor, token);
+			const ownsActive = token !== void 0 && activeSensorToken === token;
+			if (!current && !ownsActive) return;
+			if (draft.active.sensorId === id && (ownsActive || current && remove)) {
+				const draggableId = draft.active.draggableId;
+				if (draggableId !== null && draft.draggables[draggableId]) delete draft.draggables[draggableId].transformers.sensorMove;
+				draft.active.draggableId = null;
+				endedDrag = true;
+				draft.active.sensorId = null;
+				activeSensorToken = void 0;
+			}
+			if (remove && current) delete draft.sensors[id];
+		});
+		if (endedDrag) {
+			setCollisionLifecycle(({ epoch }) => ({
+				epoch: epoch + 1,
+				enabled: false
+			}));
+			recomputeLayouts();
+		}
+	};
+	const addSensor = (sensor) => {
+		registerSensor(sensor);
 	};
 	const removeSensor = (id) => {
 		const sensor = untrack(() => state.sensors[id]);
@@ -462,15 +539,7 @@ const DragDropProvider = (passedProps) => {
 			console.warn(`Cannot remove nonexistent sensor with id: ${id}`);
 			return;
 		}
-		const token = registrationTokens.get(sensor);
-		queueMicrotask(() => {
-			if (!isCurrentRegistration(state.sensors[id], sensor, token)) return;
-			const cleanupActive = state.active.sensorId === id;
-			setState((draft) => {
-				if (cleanupActive) draft.active.sensorId = null;
-				delete draft.sensors[id];
-			});
-		});
+		removeSensorRegistration(id, sensor, registrationTokens.get(sensor));
 	};
 	const setOverlay = ({ node, layout }) => {
 		const overlay = {
@@ -536,6 +605,7 @@ const DragDropProvider = (passedProps) => {
 			origin.y = y;
 			current.x = x;
 			current.y = y;
+			activeSensorToken = registrationTokens.get(draft.sensors[id]);
 			draft.active.sensorId = id;
 		});
 	};
@@ -554,6 +624,7 @@ const DragDropProvider = (passedProps) => {
 	};
 	const sensorEnd = () => setState((draft) => {
 		draft.active.sensorId = null;
+		activeSensorToken = void 0;
 	});
 	const draggableActivators = (draggableId, asHandlers) => {
 		const eventMap = {};
@@ -588,7 +659,7 @@ const DragDropProvider = (passedProps) => {
 				const currentLayout = draggable.layout;
 				if (!cache.has(draggable.node)) cache.set(draggable.node, elementLayout(draggable.node));
 				const layout = cache.get(draggable.node);
-				if (!layoutsAreEqual(currentLayout, layout)) {
+				if (draft.draggables[draggable.id]?.node === draggable.node && !layoutsAreEqual(currentLayout, layout)) {
 					draft.draggables[draggable.id].layout = layout;
 					anyLayoutChanged = true;
 				}
@@ -597,7 +668,7 @@ const DragDropProvider = (passedProps) => {
 				const currentLayout = droppable.layout;
 				if (!cache.has(droppable.node)) cache.set(droppable.node, elementLayout(droppable.node));
 				const layout = cache.get(droppable.node);
-				if (!layoutsAreEqual(currentLayout, layout)) {
+				if (draft.droppables[droppable.id]?.node === droppable.node && !layoutsAreEqual(currentLayout, layout)) {
 					draft.droppables[droppable.id].layout = layout;
 					anyLayoutChanged = true;
 				}
@@ -605,7 +676,7 @@ const DragDropProvider = (passedProps) => {
 			if (overlay) {
 				const currentLayout = overlay.layout;
 				const layout = elementLayout(overlay.node);
-				if (!layoutsAreEqual(currentLayout, layout)) {
+				if (draft.active.overlay?.node === overlay.node && !layoutsAreEqual(currentLayout, layout)) {
 					draft.active.overlay.layout = layout;
 					anyLayoutChanged = true;
 				}
@@ -614,14 +685,12 @@ const DragDropProvider = (passedProps) => {
 		return anyLayoutChanged;
 	};
 	const detectCollisions = () => {
-		const draggable = state.active.overlay ?? state.active.draggable;
-		if (draggable) {
-			const droppable = props.collisionDetector(draggable, Object.values(state.droppables), { activeDroppableId: state.active.droppableId });
-			const droppableId = droppable ? droppable.id : null;
-			if (state.active.droppableId !== droppableId) setState((draft) => {
-				draft.active.droppableId = droppableId;
-			});
-		}
+		const hasOverlay = untrack(() => state.active.overlay !== null);
+		setCollisionLifecycle((current) => current.enabled || !hasOverlay ? current : {
+			...current,
+			enabled: true
+		});
+		setGeometryRevision((revision) => revision + 1);
 	};
 	const dragStart = (draggableId) => {
 		const transformer = {
@@ -636,6 +705,10 @@ const DragDropProvider = (passedProps) => {
 			}
 		};
 		recomputeLayouts();
+		setCollisionLifecycle(({ epoch }) => ({
+			epoch,
+			enabled: true
+		}));
 		setState((draft) => {
 			draft.active.draggableId = draggableId;
 			updateTransformer(draft.draggables[draggableId].transformers, transformer);
@@ -644,10 +717,13 @@ const DragDropProvider = (passedProps) => {
 	};
 	const dragEnd = () => {
 		const draggableId = untrack(() => state.active.draggableId);
+		setCollisionLifecycle(({ epoch }) => ({
+			epoch: epoch + 1,
+			enabled: false
+		}));
 		setState((draft) => {
 			if (draggableId !== null) delete draft.draggables[draggableId].transformers.sensorMove;
 			draft.active.draggableId = null;
-			draft.active.droppableId = null;
 		});
 		recomputeLayouts();
 	};
@@ -701,7 +777,6 @@ const DragDropProvider = (passedProps) => {
 			}
 		});
 	};
-	onDragMove(() => detectCollisions());
 	const onDragStartProp = untrack(() => props.onDragStart);
 	const onDragMoveProp = untrack(() => props.onDragMove);
 	const onDragOverProp = untrack(() => props.onDragOver);
@@ -712,6 +787,7 @@ const DragDropProvider = (passedProps) => {
 	onDragEndProp && onDragEnd(onDragEndProp);
 	return createComponent(Context$1, {
 		value: [state, {
+			[sensorRegistrar]: registerSensor,
 			addTransformer,
 			removeTransformer,
 			addDraggable,
@@ -746,17 +822,27 @@ const useDragDropContext = () => {
 //#endregion
 //#region src/create-pointer-sensor.ts
 const createPointerSensor = (id = "pointer-sensor") => {
-	const [state, { addSensor, removeSensor, sensorStart, sensorMove, sensorEnd, dragStart, dragEnd }] = useDragDropContext();
+	const [state, actions] = useDragDropContext();
+	const { sensorStart, sensorMove, dragStart } = actions;
 	const activationDelay = 250;
 	const activationDistance = 10;
+	let registration = null;
+	let disposed = false;
+	let activated = false;
 	onSettled(() => {
-		addSensor({
+		const registered = registerSensorWithCleanup(actions, {
 			id,
 			activators: { pointerdown: attach }
 		});
-		return () => removeSensor(id);
+		registration = registered;
+		return () => {
+			if (disposed) return;
+			disposed = true;
+			detach();
+			registered.dispose();
+		};
 	});
-	const isActiveSensor = () => state.active.sensorId === id;
+	const isActiveSensor = () => registration?.isActive();
 	const initialCoordinates = {
 		x: 0,
 		y: 0
@@ -764,7 +850,8 @@ const createPointerSensor = (id = "pointer-sensor") => {
 	let activationDelayTimeoutId = null;
 	let activationDraggableId = null;
 	const attach = (event, draggableId) => {
-		if (event.button !== 0) return;
+		if (event.button !== 0 || disposed || activated || !registration?.isCurrent()) return;
+		detach();
 		document.addEventListener("pointermove", onPointerMove);
 		document.addEventListener("pointerup", onPointerUp);
 		activationDraggableId = draggableId;
@@ -772,17 +859,34 @@ const createPointerSensor = (id = "pointer-sensor") => {
 		initialCoordinates.y = event.clientY;
 		activationDelayTimeoutId = window.setTimeout(onActivate, activationDelay);
 	};
-	const detach = () => {
-		if (activationDelayTimeoutId) {
+	const clearActivationTimer = () => {
+		if (activationDelayTimeoutId !== null) {
 			clearTimeout(activationDelayTimeoutId);
 			activationDelayTimeoutId = null;
 		}
+	};
+	const detach = () => {
+		clearActivationTimer();
+		activationDraggableId = null;
+		activated = false;
 		document.removeEventListener("pointermove", onPointerMove);
 		document.removeEventListener("pointerup", onPointerUp);
 		document.removeEventListener("selectionchange", clearSelection);
 	};
+	const cancel = () => {
+		const wasActivated = activated;
+		detach();
+		if (wasActivated) registration?.end();
+	};
 	const onActivate = () => {
-		if (!state.active.sensor) {
+		if (disposed || !registration?.isCurrent()) {
+			cancel();
+			return;
+		}
+		if (activated || activationDraggableId === null) return;
+		clearActivationTimer();
+		if (!untrack(() => state.active.sensor)) {
+			activated = true;
 			sensorStart(id, initialCoordinates);
 			dragStart(activationDraggableId);
 			clearSelection();
@@ -790,11 +894,16 @@ const createPointerSensor = (id = "pointer-sensor") => {
 		} else if (!isActiveSensor()) detach();
 	};
 	const onPointerMove = (event) => {
+		if (disposed || !registration?.isCurrent()) {
+			cancel();
+			return;
+		}
+		if (activationDraggableId === null) return;
 		const coordinates = {
 			x: event.clientX,
 			y: event.clientY
 		};
-		if (!state.active.sensor) {
+		if (!activated && !untrack(() => state.active.sensor)) {
 			const transform = {
 				x: coordinates.x - initialCoordinates.x,
 				y: coordinates.y - initialCoordinates.y
@@ -807,12 +916,8 @@ const createPointerSensor = (id = "pointer-sensor") => {
 		}
 	};
 	const onPointerUp = (event) => {
-		detach();
-		if (isActiveSensor()) {
-			event.preventDefault();
-			dragEnd();
-			sensorEnd();
-		}
+		if (activated) event.preventDefault();
+		cancel();
 	};
 	const clearSelection = () => {
 		window.getSelection()?.removeAllRanges();
