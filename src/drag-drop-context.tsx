@@ -185,6 +185,28 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
     },
   });
 
+  // Object merges retain store identity. Tokens distinguish registrations so
+  // delayed disposal cannot remove an entry that has since been re-registered.
+  const registrationTokens = new WeakMap<object, object>();
+  const isCurrentRegistration = (
+    current: object | null | undefined,
+    entry: object,
+    token: object | undefined
+  ): boolean => current === entry && registrationTokens.get(entry) === token;
+
+  const updateTransformer = (
+    transformers: Record<Id, Transformer>,
+    transformer: Transformer
+  ) => {
+    const existing = transformers[transformer.id];
+    if (existing) {
+      Object.assign(existing, transformer);
+    } else {
+      transformers[transformer.id] = transformer;
+    }
+    registrationTokens.set(transformers[transformer.id], {});
+  };
+
   const addTransformer: DragDropActions["addTransformer"] = (
     type,
     id,
@@ -200,7 +222,7 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
     }
 
     setState((draft) => {
-      draft[type][id].transformers[transformer.id] = transformer;
+      updateTransformer(draft[type][id].transformers, transformer);
     });
   };
 
@@ -226,13 +248,19 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
       );
       return;
     }
+    const itemToken = registrationTokens.get(item);
+    const transformerToken = registrationTokens.get(transformer);
 
     // Disposal can run in an owned scope. Defer registry writes and only
     // remove the captured registration, never a replacement using the same ID.
     queueMicrotask(() => {
       if (
-        state[type][id] !== item ||
-        item.transformers[transformerId] !== transformer
+        !isCurrentRegistration(state[type][id], item, itemToken) ||
+        !isCurrentRegistration(
+          item.transformers[transformerId],
+          transformer,
+          transformerToken
+        )
       ) {
         return;
       }
@@ -260,47 +288,48 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
     };
     let transformer: Transformer | undefined;
 
-    if (!existingDraggable) {
-      Object.defineProperties(draggable, {
-        transformers: {
-          enumerable: true,
-          configurable: true,
-          writable: true,
-          value: {},
-        },
-        transform: {
-          enumerable: true,
-          configurable: true,
-          get: () => {
-            if (state.active.overlay) {
-              return noopTransform();
-            }
+    Object.defineProperties(draggable, {
+      transformers: {
+        enumerable: true,
+        configurable: true,
+        writable: true,
+        value: {},
+      },
+      transform: {
+        enumerable: true,
+        configurable: true,
+        get: () => {
+          if (state.active.overlay) {
+            return noopTransform();
+          }
 
-            const transformers = Object.values(
-              state.draggables[id].transformers
-            );
-            transformers.sort((a, b) => a.order - b.order);
+          const transformers = Object.values(state.draggables[id].transformers);
+          transformers.sort((a, b) => a.order - b.order);
 
-            return transformers.reduce(
-              (transform: Transform, transformer: Transformer) => {
-                return transformer.callback(transform);
-              },
-              noopTransform()
-            );
-          },
+          return transformers.reduce(
+            (transform: Transform, transformer: Transformer) => {
+              return transformer.callback(transform);
+            },
+            noopTransform()
+          );
         },
-        transformed: {
-          enumerable: true,
-          configurable: true,
-          get: () => {
-            return transformLayout(
-              state.draggables[id].layout,
-              state.draggables[id].transform
-            );
-          },
+      },
+      transformed: {
+        enumerable: true,
+        configurable: true,
+        get: () => {
+          return transformLayout(
+            state.draggables[id].layout,
+            state.draggables[id].transform
+          );
         },
-      });
-    } else if (state.active.draggableId === id && !state.active.overlay) {
+      },
+    });
+    if (
+      existingDraggable &&
+      state.active.draggableId === id &&
+      !state.active.overlay
+    ) {
       const layoutDelta = {
         x: existingDraggable.layout.x - layout.x,
         y: existingDraggable.layout.y - layout.y,
@@ -327,9 +356,22 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
     }
 
     setState((draft) => {
-      draft.draggables[id] = draggable as Draggable;
+      const existing = draft.draggables[id];
+      if (existing) {
+        // Merge only registration fields, preserving accessors and metadata.
+        Object.assign(existing, {
+          id,
+          node,
+          layout,
+          data,
+          _pendingCleanup: false,
+        });
+      } else {
+        draft.draggables[id] = draggable as Draggable;
+      }
+      registrationTokens.set(draft.draggables[id], {});
       if (transformer) {
-        draft.draggables[id].transformers[transformer.id] = transformer;
+        updateTransformer(draft.draggables[id].transformers, transformer);
       }
     });
 
@@ -344,20 +386,29 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
       console.warn(`Cannot remove nonexistent draggable with id: ${id}`);
       return;
     }
+    const token = registrationTokens.get(draggable);
 
     // Even marking cleanup pending is a reactive write; defer it past disposal.
     queueMicrotask(() => {
-      if (state.draggables[id] !== draggable) return;
+      if (!isCurrentRegistration(state.draggables[id], draggable, token))
+        return;
 
       setState((draft) => {
         draft.draggables[id]._pendingCleanup = true;
       });
-      queueMicrotask(() => cleanupDraggable(id, draggable));
+      queueMicrotask(() => cleanupDraggable(id, draggable, token));
     });
   };
 
-  const cleanupDraggable = (id: Id, draggable: Draggable) => {
-    if (state.draggables[id] === draggable && draggable._pendingCleanup) {
+  const cleanupDraggable = (
+    id: Id,
+    draggable: Draggable,
+    token: object | undefined
+  ) => {
+    if (
+      isCurrentRegistration(state.draggables[id], draggable, token) &&
+      draggable._pendingCleanup
+    ) {
       const cleanupActive = state.active.draggableId === id;
       setState((draft) => {
         if (cleanupActive) {
@@ -375,8 +426,6 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
     data,
     transformers,
   }: DroppableRegistration) => {
-    const existingDroppable = state.droppables[id];
-
     const droppable = {
       id,
       node,
@@ -385,14 +434,14 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
       _pendingCleanup: false,
     };
 
-    // Every replacement needs a complete entry. Initial transformers share
-    // its registration lifetime; ordinary action updates retain custom ones.
+    // Initial transformers share the registration lifetime. Ordinary action
+    // updates retain the existing transformer map, accessors, and metadata.
     Object.defineProperties(droppable, {
       transformers: {
         enumerable: true,
         configurable: true,
         writable: true,
-        value: { ...(transformers ?? existingDroppable?.transformers) },
+        value: { ...transformers },
       },
       transform: {
         enumerable: true,
@@ -422,7 +471,23 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
     });
 
     setState((draft) => {
-      draft.droppables[id] = droppable as Droppable;
+      const existing = draft.droppables[id];
+      if (existing) {
+        Object.assign(existing, {
+          id,
+          node,
+          layout,
+          data,
+          _pendingCleanup: false,
+        });
+        if (transformers) {
+          // An explicit initial map belongs to a new lifecycle registration.
+          existing.transformers = { ...transformers };
+        }
+      } else {
+        draft.droppables[id] = droppable as Droppable;
+      }
+      registrationTokens.set(draft.droppables[id], {});
     });
 
     if (state.active.draggable) {
@@ -436,20 +501,29 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
       console.warn(`Cannot remove nonexistent droppable with id: ${id}`);
       return;
     }
+    const token = registrationTokens.get(droppable);
 
     // Even marking cleanup pending is a reactive write; defer it past disposal.
     queueMicrotask(() => {
-      if (state.droppables[id] !== droppable) return;
+      if (!isCurrentRegistration(state.droppables[id], droppable, token))
+        return;
 
       setState((draft) => {
         draft.droppables[id]._pendingCleanup = true;
       });
-      queueMicrotask(() => cleanupDroppable(id, droppable));
+      queueMicrotask(() => cleanupDroppable(id, droppable, token));
     });
   };
 
-  const cleanupDroppable = (id: Id, droppable: Droppable) => {
-    if (state.droppables[id] === droppable && droppable._pendingCleanup) {
+  const cleanupDroppable = (
+    id: Id,
+    droppable: Droppable,
+    token: object | undefined
+  ) => {
+    if (
+      isCurrentRegistration(state.droppables[id], droppable, token) &&
+      droppable._pendingCleanup
+    ) {
       const cleanupActive = state.active.droppableId === id;
       setState((draft) => {
         if (cleanupActive) {
@@ -462,7 +536,7 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
 
   const addSensor: DragDropActions["addSensor"] = ({ id, activators }) => {
     setState((draft) => {
-      draft.sensors[id] = {
+      const sensor: Sensor = {
         id,
         activators,
         coordinates: {
@@ -480,6 +554,15 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
           },
         },
       };
+      const existing = draft.sensors[id];
+      if (existing) {
+        // Registration resets activators/coordinates, as the former shallow
+        // merge did, while preserving the sensor record and other metadata.
+        Object.assign(existing, sensor);
+      } else {
+        draft.sensors[id] = sensor;
+      }
+      registrationTokens.set(draft.sensors[id], {});
     });
   };
 
@@ -489,9 +572,10 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
       console.warn(`Cannot remove nonexistent sensor with id: ${id}`);
       return;
     }
+    const token = registrationTokens.get(sensor);
 
     queueMicrotask(() => {
-      if (state.sensors[id] !== sensor) return;
+      if (!isCurrentRegistration(state.sensors[id], sensor, token)) return;
 
       const cleanupActive = state.active.sensorId === id;
       setState((draft) => {
@@ -504,70 +588,69 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
   };
 
   const setOverlay: DragDropActions["setOverlay"] = ({ node, layout }) => {
-    const existing = state.active.overlay;
     const overlay = {
       node,
       layout,
     };
 
-    if (!existing) {
-      Object.defineProperties(overlay, {
-        id: {
-          enumerable: true,
-          configurable: true,
-          get: () => state.active.draggable?.id,
-        },
-        data: {
-          enumerable: true,
-          configurable: true,
-          get: () => state.active.draggable?.data,
-        },
-        transformers: {
-          enumerable: true,
-          configurable: true,
-          get: () =>
-            Object.fromEntries(
-              Object.entries(
-                state.active.draggable
-                  ? state.active.draggable.transformers
-                  : {}
-              ).filter(([id]) => id !== "addDraggable-existing-offset")
-            ),
-        },
-        transform: {
-          enumerable: true,
-          configurable: true,
-          get: () => {
-            const transformers = Object.values(
-              state.active.overlay ? state.active.overlay.transformers : []
-            );
-            transformers.sort((a, b) => a.order - b.order);
+    Object.defineProperties(overlay, {
+      id: {
+        enumerable: true,
+        configurable: true,
+        get: () => state.active.draggable?.id,
+      },
+      data: {
+        enumerable: true,
+        configurable: true,
+        get: () => state.active.draggable?.data,
+      },
+      transformers: {
+        enumerable: true,
+        configurable: true,
+        get: () =>
+          Object.fromEntries(
+            Object.entries(
+              state.active.draggable ? state.active.draggable.transformers : {}
+            ).filter(([id]) => id !== "addDraggable-existing-offset")
+          ),
+      },
+      transform: {
+        enumerable: true,
+        configurable: true,
+        get: () => {
+          const transformers = Object.values(
+            state.active.overlay ? state.active.overlay.transformers : []
+          );
+          transformers.sort((a, b) => a.order - b.order);
 
-            return transformers.reduce(
-              (transform: Transform, transformer: Transformer) => {
-                return transformer.callback(transform);
-              },
-              noopTransform()
-            );
-          },
+          return transformers.reduce(
+            (transform: Transform, transformer: Transformer) => {
+              return transformer.callback(transform);
+            },
+            noopTransform()
+          );
         },
-        transformed: {
-          enumerable: true,
-          configurable: true,
-          get: () => {
-            return state.active.overlay
-              ? transformLayout(
-                  state.active.overlay!.layout,
-                  state.active.overlay!.transform
-                )
-              : new Layout({ x: 0, y: 0, width: 0, height: 0 });
-          },
+      },
+      transformed: {
+        enumerable: true,
+        configurable: true,
+        get: () => {
+          return state.active.overlay
+            ? transformLayout(
+                state.active.overlay!.layout,
+                state.active.overlay!.transform
+              )
+            : new Layout({ x: 0, y: 0, width: 0, height: 0 });
         },
-      });
-    }
+      },
+    });
 
     setState((draft) => {
-      draft.active.overlay = overlay as Overlay;
+      if (draft.active.overlay) {
+        Object.assign(draft.active.overlay, { node, layout });
+      } else {
+        draft.active.overlay = overlay as Overlay;
+      }
     });
   };
 
@@ -577,12 +660,13 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
     });
 
   const sensorStart: DragDropActions["sensorStart"] = (id, coordinates) => {
+    const { x, y } = coordinates;
     setState((draft) => {
-      draft.sensors[id].coordinates = {
-        ...draft.sensors[id].coordinates,
-        origin: { ...coordinates },
-        current: { ...coordinates },
-      };
+      const { origin, current } = draft.sensors[id].coordinates;
+      origin.x = x;
+      origin.y = y;
+      current.x = x;
+      current.y = y;
       draft.active.sensorId = id;
     });
   };
@@ -594,10 +678,11 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
       return;
     }
 
+    const { x, y } = coordinates;
     setState((draft) => {
-      draft.sensors[sensorId].coordinates.current = {
-        ...coordinates,
-      };
+      const current = draft.sensors[sensorId].coordinates.current;
+      current.x = x;
+      current.y = y;
     });
   };
 
@@ -650,6 +735,8 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
   };
 
   const recomputeLayouts: DragDropActions["recomputeLayouts"] = () => {
+    // Layout is a class instance, which the Solid 1 setters replaced rather
+    // than merged. Keep those replacements, including its prototype getters.
     let anyLayoutChanged = false;
 
     const draggables = Object.values(state.draggables);
@@ -742,7 +829,10 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
 
     setState((draft) => {
       draft.active.draggableId = draggableId;
-      draft.draggables[draggableId].transformers[transformer.id] = transformer;
+      updateTransformer(
+        draft.draggables[draggableId].transformers,
+        transformer
+      );
     });
 
     detectCollisions();
