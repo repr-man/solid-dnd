@@ -638,7 +638,7 @@ const DragDropProvider = (passedProps) => {
 		const listeners = {};
 		for (const key in eventMap) {
 			let handlerKey = key;
-			if (asHandlers) handlerKey = `on${key}`;
+			if (asHandlers) handlerKey = `on${key.charAt(0).toUpperCase()}${key.slice(1)}`;
 			listeners[handlerKey] = (event) => {
 				for (const { activator } of eventMap[key]) {
 					if (state.active.sensor) break;
@@ -1306,7 +1306,7 @@ const Highlighter = (props) => {
 		active: false
 	}, props);
 	var _el$ = getNextElement(_tmpl$);
-	insert(_el$, () => props.id);
+	insert(_el$, scope(() => props.id));
 	effect(() => ({
 		...layoutStyle(props.layout),
 		"outline-width": props.active ? "4px" : "1px",

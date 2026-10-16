@@ -891,7 +891,9 @@ const DragDropProvider: ParentComponent<DragDropContextProps> = (
     for (const key in eventMap) {
       let handlerKey = key;
       if (asHandlers) {
-        handlerKey = `on${key}`;
+        // Solid 2 recognizes event props only when the name after "on"
+        // starts with an uppercase letter; native listener names stay lowercase.
+        handlerKey = `on${key.charAt(0).toUpperCase()}${key.slice(1)}`;
       }
       listeners[handlerKey] = (event) => {
         for (const { activator } of eventMap[key]) {

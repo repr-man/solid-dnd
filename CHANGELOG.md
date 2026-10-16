@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Update Solid dependencies and minimum peer versions to 2.0.0-rc.15.
+- Capitalize generated `dragActivators` event props for Solid's RC.14 event
+  handler recognition. Native sensor listener names remain unchanged.
+
 ## [0.7.5] - 2023-11-17
 
 ### Fixed

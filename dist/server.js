@@ -1,5 +1,5 @@
 import { For, Show, createContext, createEffect, createMemo, createRoot, createSignal, createStore, getOwner, isDisposed, merge, onSettled, runWithOwner, untrack, useContext } from "solid-js";
-import { Portal, Show as Show$1, escape, memo, scope, ssr, ssrClassName, ssrGroup, ssrHydrationKey, ssrStyle } from "@solidjs/web";
+import { Portal, Show as Show$1, escape, memo, scope, ssr, ssrAttribute, ssrClassName, ssrGroup, ssrHydrationKey, ssrStyle } from "@solidjs/web";
 //#region src/layout.ts
 var Layout = class {
 	x;
@@ -170,6 +170,20 @@ const mostIntersecting = (draggable, droppables, context) => {
 };
 //#endregion
 //#region src/drag-drop-context.tsx
+var _m$$3 = Symbol();
+var _d$$3 = {
+	get() {
+		return this[_m$$3].children;
+	},
+	enumerable: true,
+	configurable: true
+};
+function _P$$3(_p, _p2) {
+	this[_m$$3] = _p;
+	this.value = _p2;
+	Object.defineProperty(this, "children", _d$$3);
+}
+_P$$3.prototype = Object.prototype;
 const sensorRegistrar = Symbol.for("@thisbeyond/solid-dnd.registerSensor");
 const registerSensorWithCleanup = (actions, sensor) => actions[sensorRegistrar](sensor);
 const Context$1 = createContext();
@@ -638,7 +652,7 @@ const DragDropProvider = (passedProps) => {
 		const listeners = {};
 		for (const key in eventMap) {
 			let handlerKey = key;
-			if (asHandlers) handlerKey = `on${key}`;
+			if (asHandlers) handlerKey = `on${key.charAt(0).toUpperCase()}${key.slice(1)}`;
 			listeners[handlerKey] = (event) => {
 				for (const { activator } of eventMap[key]) {
 					if (state.active.sensor) break;
@@ -785,36 +799,31 @@ const DragDropProvider = (passedProps) => {
 	onDragMoveProp && onDragMove(onDragMoveProp);
 	onDragOverProp && onDragOver(onDragOverProp);
 	onDragEndProp && onDragEnd(onDragEndProp);
-	return Context$1({
-		value: [state, {
-			[sensorRegistrar]: registerSensor,
-			addTransformer,
-			removeTransformer,
-			addDraggable,
-			removeDraggable,
-			addDroppable,
-			removeDroppable,
-			addSensor,
-			removeSensor,
-			setOverlay,
-			clearOverlay,
-			recomputeLayouts,
-			detectCollisions,
-			draggableActivators,
-			sensorStart,
-			sensorMove,
-			sensorEnd,
-			dragStart,
-			dragEnd,
-			onDragStart,
-			onDragMove,
-			onDragOver,
-			onDragEnd
-		}],
-		get children() {
-			return props.children;
-		}
-	});
+	return Context$1(new _P$$3(props, [state, {
+		[sensorRegistrar]: registerSensor,
+		addTransformer,
+		removeTransformer,
+		addDraggable,
+		removeDraggable,
+		addDroppable,
+		removeDroppable,
+		addSensor,
+		removeSensor,
+		setOverlay,
+		clearOverlay,
+		recomputeLayouts,
+		detectCollisions,
+		draggableActivators,
+		sensorStart,
+		sensorMove,
+		sensorEnd,
+		dragStart,
+		dragEnd,
+		onDragStart,
+		onDragMove,
+		onDragOver,
+		onDragEnd
+	}]));
 };
 const useDragDropContext = () => {
 	return useContext(Context$1) || null;
@@ -1086,14 +1095,76 @@ const createDroppableWithTransformers = (id, data, transformers) => {
 //#region src/drag-overlay.tsx
 var _tmpl$$1 = [
 	"<div",
-	" class=\"",
-	"\" style=\"",
-	"\">",
+	"",
+	"",
+	">",
 	"</div>"
 ];
+var _m$$2 = Symbol();
+var _m$2$1 = Symbol();
+var _m$3 = Symbol();
+var _m$4 = Symbol();
+var _d$$2 = {
+	get() {
+		return this[_m$$2].active.draggable;
+	},
+	enumerable: true,
+	configurable: true
+};
+var _d$2$1 = {
+	get() {
+		this[_m$2$1];
+		const props = this[_m$3];
+		const style = this[_m$4];
+		const state = this[_m$$2];
+		var _v$ = ssrHydrationKey(), _g$ = ssrGroup(() => [((_v$2) => _v$2 == null ? "" : ssrAttribute("class", ssrClassName(_v$2)))(props.class), ((_v$4) => _v$4 == null ? "" : ssrAttribute("style", ssrStyle(_v$4)))(style())], 2), _v$6 = scope((() => {
+			var _c$ = memo(() => typeof props.children === "function");
+			return () => _c$() ? escape(props.children(state.active.draggable)) : escape(props.children);
+		})());
+		return ssr(_tmpl$$1, _v$, _g$, _g$, _v$6);
+	},
+	enumerable: true,
+	configurable: true
+};
+function _P$$2(_p, _p2, _p3, _p4) {
+	this[_m$$2] = _p;
+	this[_m$2$1] = _p2;
+	this[_m$3] = _p3;
+	this[_m$4] = _p4;
+	Object.defineProperty(this, "when", _d$$2);
+	Object.defineProperty(this, "children", _d$2$1);
+}
+_P$$2.prototype = Object.prototype;
+var _d$3$1 = {
+	get() {
+		return document.body;
+	},
+	enumerable: true,
+	configurable: true
+};
+var _d$4$1 = {
+	get() {
+		const state = this[_m$$2];
+		const node = this[_m$2$1];
+		const props = this[_m$3];
+		const style = this[_m$4];
+		return Show$1(new _P$$2(state, node, props, style));
+	},
+	enumerable: true,
+	configurable: true
+};
+function _P$2$1(_p5, _p6, _p7, _p8) {
+	this[_m$$2] = _p5;
+	this[_m$2$1] = _p6;
+	this[_m$3] = _p7;
+	this[_m$4] = _p8;
+	Object.defineProperty(this, "mount", _d$3$1);
+	Object.defineProperty(this, "children", _d$4$1);
+}
+_P$2$1.prototype = Object.prototype;
 const DragOverlay = (props) => {
-	var _v$, _g$, _v$4;
 	const [state, { onDragStart, onDragEnd, setOverlay, clearOverlay }] = useDragDropContext();
+	let node;
 	onDragStart(({ draggable }) => {
 		setOverlay({
 			node: draggable.node,
@@ -1117,27 +1188,24 @@ const DragOverlay = (props) => {
 			...props.style
 		};
 	};
-	return Portal({
-		get mount() {
-			return document.body;
-		},
-		get children() {
-			return Show$1({
-				get when() {
-					return state.active.draggable;
-				},
-				get children() {
-					return _v$ = ssrHydrationKey(), _g$ = ssrGroup(() => [ssrClassName(props.class), ssrStyle(style())], 2), _v$4 = scope((() => {
-						var _c$ = memo(() => typeof props.children === "function");
-						return () => _c$() ? escape(props.children(state.active.draggable)) : escape(props.children);
-					})()), ssr(_tmpl$$1, _v$, _g$, _g$, _v$4);
-				}
-			});
-		}
-	});
+	return Portal(new _P$2$1(state, node, props, style));
 };
 //#endregion
 //#region src/sortable-context.tsx
+var _m$$1 = Symbol();
+var _d$$1 = {
+	get() {
+		return this[_m$$1].children;
+	},
+	enumerable: true,
+	configurable: true
+};
+function _P$$1(_p, _p2) {
+	this[_m$$1] = _p;
+	this.value = _p2;
+	Object.defineProperty(this, "children", _d$$1);
+}
+_P$$1.prototype = Object.prototype;
 const Context = createContext();
 const updateIds = (target, ids) => {
 	let changed = target.length !== ids.length;
@@ -1181,12 +1249,7 @@ const SortableProvider = (props) => {
 			}
 		});
 	});
-	return Context({
-		value: [state, {}],
-		get children() {
-			return props.children;
-		}
-	});
+	return Context(new _P$$1(props, [state, {}]));
 };
 const useSortableContext = () => {
 	return useContext(Context) || null;
@@ -1286,6 +1349,182 @@ var _tmpl$ = [
 	"\">",
 	"</div>"
 ];
+var _m$ = Symbol();
+var _m$2 = Symbol();
+var _d$ = {
+	get() {
+		return this[_m$].id;
+	},
+	enumerable: true,
+	configurable: true
+};
+var _d$2 = {
+	get() {
+		return this[_m$].layout;
+	},
+	enumerable: true,
+	configurable: true
+};
+var _d$3 = {
+	get() {
+		const droppable = this[_m$];
+		const state = this[_m$2];
+		return droppable.id === state.active.droppableId;
+	},
+	enumerable: true,
+	configurable: true
+};
+function _P$(_p, _p2) {
+	this[_m$] = _p;
+	this[_m$2] = _p2;
+	Object.defineProperty(this, "id", _d$);
+	Object.defineProperty(this, "layout", _d$2);
+	Object.defineProperty(this, "active", _d$3);
+}
+_P$.prototype = Object.prototype;
+var _d$4 = {
+	get() {
+		const state = this[_m$];
+		return Object.values(state.droppables);
+	},
+	enumerable: true,
+	configurable: true
+};
+function _P$2(_p3, _p4) {
+	this[_m$] = _p3;
+	Object.defineProperty(this, "each", _d$4);
+	this.children = _p4;
+}
+_P$2.prototype = Object.prototype;
+var _d$5 = {
+	get() {
+		return this[_m$].id;
+	},
+	enumerable: true,
+	configurable: true
+};
+var _d$6 = {
+	get() {
+		return this[_m$].layout;
+	},
+	enumerable: true,
+	configurable: true
+};
+var _d$7 = {
+	get() {
+		const draggable = this[_m$];
+		const state = this[_m$2];
+		return draggable.id === state.active.draggableId;
+	},
+	enumerable: true,
+	configurable: true
+};
+var _d$8 = {
+	get() {
+		const draggable = this[_m$];
+		return {
+			"align-items": "flex-start",
+			"justify-content": "flex-start",
+			...transformStyle(draggable.transform)
+		};
+	},
+	enumerable: true,
+	configurable: true
+};
+function _P$3(_p5, _p6, _p7) {
+	this[_m$] = _p5;
+	this[_m$2] = _p6;
+	Object.defineProperty(this, "id", _d$5);
+	Object.defineProperty(this, "layout", _d$6);
+	Object.defineProperty(this, "active", _d$7);
+	this.color = _p7;
+	Object.defineProperty(this, "style", _d$8);
+}
+_P$3.prototype = Object.prototype;
+var _d$9 = {
+	get() {
+		const state = this[_m$];
+		return Object.values(state.draggables);
+	},
+	enumerable: true,
+	configurable: true
+};
+function _P$4(_p8, _p9) {
+	this[_m$] = _p8;
+	Object.defineProperty(this, "each", _d$9);
+	this.children = _p9;
+}
+_P$4.prototype = Object.prototype;
+var _d$0 = {
+	get() {
+		return this[_m$].id;
+	},
+	enumerable: true,
+	configurable: true
+};
+var _d$1 = {
+	get() {
+		return this[_m$].layout;
+	},
+	enumerable: true,
+	configurable: true
+};
+var _d$10 = {
+	get() {
+		const overlay = this[_m$];
+		return { ...transformStyle(overlay.transform) };
+	},
+	enumerable: true,
+	configurable: true
+};
+function _P$5(_p0, _p1, _p10) {
+	this[_m$] = _p0;
+	Object.defineProperty(this, "id", _d$0);
+	Object.defineProperty(this, "layout", _d$1);
+	this.active = _p1;
+	this.color = _p10;
+	Object.defineProperty(this, "style", _d$10);
+}
+_P$5.prototype = Object.prototype;
+var _d$11 = {
+	get() {
+		return this[_m$].active.overlay;
+	},
+	enumerable: true,
+	configurable: true
+};
+function _P$6(_p11, _p12, _p13) {
+	this[_m$] = _p11;
+	Object.defineProperty(this, "when", _d$11);
+	this.keyed = _p12;
+	this.children = _p13;
+}
+_P$6.prototype = Object.prototype;
+var _d$12 = {
+	get() {
+		return document.body;
+	},
+	enumerable: true,
+	configurable: true
+};
+var _d$13 = {
+	get() {
+		const state = this[_m$];
+		return [
+			For(new _P$2(state, (droppable) => droppable ? Highlighter(new _P$(droppable, state)) : null)),
+			For(new _P$4(state, (draggable) => draggable ? Highlighter(new _P$3(draggable, state, "blue")) : null)),
+			Show(new _P$6(state, true, (overlay) => Highlighter(new _P$5(overlay, true, "orange"))))
+		];
+	},
+	enumerable: true,
+	configurable: true
+};
+function _P$7(_p14) {
+	this[_m$] = _p14;
+	Object.defineProperty(this, "mount", _d$12);
+	Object.defineProperty(this, "children", _d$13);
+}
+_P$7.prototype = Object.prototype;
 const Highlighter = (props) => {
 	props = merge({
 		color: "red",
@@ -1303,7 +1542,7 @@ const Highlighter = (props) => {
 		"align-items": "flex-end",
 		"justify-content": "flex-end",
 		...props.style
-	}), _v$3 = () => escape(props.id);
+	}), _v$3 = scope(() => escape(props.id));
 	return ssr(_tmpl$, _v$, _v$2, _v$3);
 };
 const DragDropDebugger = () => {
@@ -1322,74 +1561,7 @@ const DragDropDebugger = () => {
 		document.addEventListener("scroll", update);
 		return () => document.removeEventListener("scroll", update);
 	});
-	return Portal({
-		get mount() {
-			return document.body;
-		},
-		get children() {
-			return [
-				For({
-					get each() {
-						return Object.values(state.droppables);
-					},
-					children: (droppable) => droppable ? Highlighter({
-						get id() {
-							return droppable.id;
-						},
-						get layout() {
-							return droppable.layout;
-						},
-						get active() {
-							return droppable.id === state.active.droppableId;
-						}
-					}) : null
-				}),
-				For({
-					get each() {
-						return Object.values(state.draggables);
-					},
-					children: (draggable) => draggable ? Highlighter({
-						get id() {
-							return draggable.id;
-						},
-						get layout() {
-							return draggable.layout;
-						},
-						get active() {
-							return draggable.id === state.active.draggableId;
-						},
-						color: "blue",
-						get style() {
-							return {
-								"align-items": "flex-start",
-								"justify-content": "flex-start",
-								...transformStyle(draggable.transform)
-							};
-						}
-					}) : null
-				}),
-				Show({
-					get when() {
-						return state.active.overlay;
-					},
-					keyed: true,
-					children: (overlay) => Highlighter({
-						get id() {
-							return overlay.id;
-						},
-						get layout() {
-							return overlay.layout;
-						},
-						active: true,
-						color: "orange",
-						get style() {
-							return { ...transformStyle(overlay.transform) };
-						}
-					})
-				})
-			];
-		}
-	});
+	return Portal(new _P$7(state));
 };
 //#endregion
 export { DragDropDebugger, DragDropProvider, DragDropSensors, DragOverlay, SortableProvider, closestCenter, closestCorners, createDraggable, createDroppable, createPointerSensor, createSortable, layoutStyle, maybeTransformStyle, mostIntersecting, transformStyle, useDragDropContext, useSortableContext };

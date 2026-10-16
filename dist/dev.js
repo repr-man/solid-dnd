@@ -638,7 +638,7 @@ const DragDropProvider = (passedProps) => {
 		const listeners = {};
 		for (const key in eventMap) {
 			let handlerKey = key;
-			if (asHandlers) handlerKey = `on${key}`;
+			if (asHandlers) handlerKey = `on${key.charAt(0).toUpperCase()}${key.slice(1)}`;
 			listeners[handlerKey] = (event) => {
 				for (const { activator } of eventMap[key]) {
 					if (state.active.sensor) break;
@@ -814,7 +814,7 @@ const DragDropProvider = (passedProps) => {
 		get children() {
 			return props.children;
 		}
-	});
+	}, "Context");
 };
 const useDragDropContext = () => {
 	return useContext(Context$1) || null;
@@ -1141,19 +1141,19 @@ const DragOverlay = (props) => {
 					insert(_el$, scope((() => {
 						var _c$ = memo(() => typeof props.children === "function");
 						return () => _c$() ? props.children(state.active.draggable) : props.children;
-					})()));
+					})()), void 0, void 0, { name: "div.children" });
 					effect(() => ({
 						e: readShallow(props.class),
 						t: readShallow(style$1())
 					}), ({ e, t }, _p$) => {
 						className(_el$, e, _p$?.e);
 						style(_el$, t, _p$?.t);
-					});
+					}, { name: "div.class, div.style" });
 					return _el$;
 				}
-			});
+			}, "Show");
 		}
-	});
+	}, "Portal");
 };
 //#endregion
 //#region src/sortable-context.tsx
@@ -1205,7 +1205,7 @@ const SortableProvider = (props) => {
 		get children() {
 			return props.children;
 		}
-	});
+	}, "Context");
 };
 const useSortableContext = () => {
 	return useContext(Context) || null;
@@ -1306,7 +1306,7 @@ const Highlighter = (props) => {
 		active: false
 	}, props);
 	var _el$ = getNextElement(_tmpl$);
-	insert(_el$, () => props.id);
+	insert(_el$, scope(() => props.id), void 0, void 0, { name: "div.children" });
 	effect(() => ({
 		...layoutStyle(props.layout),
 		"outline-width": props.active ? "4px" : "1px",
@@ -1315,7 +1315,7 @@ const Highlighter = (props) => {
 		...props.style
 	}), (_v$, _$p) => {
 		style(_el$, _v$, _$p);
-	});
+	}, { name: "div.style" });
 	return _el$;
 };
 const DragDropDebugger = () => {
@@ -1354,8 +1354,8 @@ const DragDropDebugger = () => {
 						get active() {
 							return droppable.id === state.active.droppableId;
 						}
-					}) : null
-				}),
+					}, "Highlighter") : null
+				}, "For"),
 				createComponent(For, {
 					get each() {
 						return Object.values(state.draggables);
@@ -1378,8 +1378,8 @@ const DragDropDebugger = () => {
 								...transformStyle(draggable.transform)
 							};
 						}
-					}) : null
-				}),
+					}, "Highlighter") : null
+				}, "For"),
 				createComponent(Show$1, {
 					get when() {
 						return state.active.overlay;
@@ -1397,11 +1397,11 @@ const DragDropDebugger = () => {
 						get style() {
 							return { ...transformStyle(overlay.transform) };
 						}
-					})
-				})
+					}, "Highlighter")
+				}, "Show")
 			];
 		}
-	});
+	}, "Portal");
 };
 //#endregion
 export { DragDropDebugger, DragDropProvider, DragDropSensors, DragOverlay, SortableProvider, closestCenter, closestCorners, createDraggable, createDroppable, createPointerSensor, createSortable, layoutStyle, maybeTransformStyle, mostIntersecting, transformStyle, useDragDropContext, useSortableContext };
